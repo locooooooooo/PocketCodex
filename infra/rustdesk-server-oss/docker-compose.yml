@@ -1,0 +1,27 @@
+services:
+  hbbs:
+    container_name: rustdesk-hbbs
+    image: rustdesk/rustdesk-server:latest
+    command: hbbs -r ${RUSTDESK_RELAY_HOST}:${RUSTDESK_RELAY_PORT}
+    volumes:
+      - ./data:/root
+    ports:
+      - "${RUSTDESK_HOST_IP}:21114:21114/tcp"
+      - "${RUSTDESK_HOST_IP}:21115:21115/tcp"
+      - "${RUSTDESK_HOST_IP}:21116:21116/tcp"
+      - "${RUSTDESK_HOST_IP}:21116:21116/udp"
+      - "${RUSTDESK_HOST_IP}:21118:21118/tcp"
+    depends_on:
+      - hbbr
+    restart: unless-stopped
+
+  hbbr:
+    container_name: rustdesk-hbbr
+    image: rustdesk/rustdesk-server:latest
+    command: hbbr
+    volumes:
+      - ./data:/root
+    ports:
+      - "${RUSTDESK_HOST_IP}:21117:21117/tcp"
+      - "${RUSTDESK_HOST_IP}:21119:21119/tcp"
+    restart: unless-stopped

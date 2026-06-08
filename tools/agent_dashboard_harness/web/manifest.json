@@ -1,0 +1,10 @@
+{
+  "name": "Agent Dashboard Harness",
+  "short_name": "Dashboard Harness",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#070B13",
+  "theme_color": "#070B13",
+  "description": "External hot-reload harness for the RustDesk Agent Dashboard UI.",
+  "orientation": "any"
+}
