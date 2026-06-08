@@ -1,137 +1,147 @@
 # RustDesk Agent Dashboard 开发调试流
 
-更新时间：2026-06-04
+更新时间：2026-06-08
 
 ## 目标
 
-把当前 Dashboard 的调试链路收口成一套快速、可热重载、可完整预览的开发方案，减少“连真远控 + 重装 APK + 手敲长命令”的成本。
+Dashboard 开发优先走 Web 和桌面本机快速预览，减少“真远控 + 重装 APK + 手敲长命令”的迭代成本。
 
-这套方案现在支持 3 种模式：
+当前调试流支持：
 
 - `normal`：正常 RustDesk 启动
-- `full`：独立全页 Dashboard mock 预览
-- `floating`：模拟远控画面上的悬浮 Dashboard 完整预览
+- `full`：独立全页 Dashboard 预览
+- `floating`：模拟远控画面上的悬浮 Dashboard 预览
+- mock data：纯 UI 和状态模拟
+- live debug bridge：读取本机配置的 Codex data directory，并转发到本机 bridge
 
-## 本次已完成
+## 推荐入口
 
-- 已把 Flutter 启动开关从单一布尔值升级成模式化开关：
-  - `RUSTDESK_DEV_DASHBOARD_MODE=full`
-  - `RUSTDESK_DEV_DASHBOARD_MODE=floating`
-- 已增强 `AgentDashboardDevShell`：
-  - `full` 模式：直接预览整页 Dashboard
-  - `floating` 模式：预览“远控背景 + 悬浮 Dashboard + 最小化气泡”
-  - 两种模式都保留 mock 数据和模拟 agent 动作
-- 已新增统一启动脚本：
-  - `agent/codex-bridge/scripts/run-dashboard-dev.ps1`
+### 1. 主工程 Flutter 预览
 
-## 最快调试路径
-
-### 1. 本机桌面直接调悬浮窗口态
-
-这是当前最快、最完整、最适合 UI 迭代的路径。
+本机桌面悬浮窗口态：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File agent/codex-bridge/scripts/run-dashboard-dev.ps1 -Platform windows -Mode floating
 ```
 
-特点：
-
-- 直接进入“远控背景 + 浮动 Dashboard”完整预览
-- 支持 Flutter hot reload
-- 不需要 APK
-- 不需要连真远控
-- 最适合调窗口大小、层级、标题栏、最小化气泡、会话 sheet
-
-### 2. 本机桌面调全页 Dashboard
+本机桌面全页：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File agent/codex-bridge/scripts/run-dashboard-dev.ps1 -Platform windows -Mode full
 ```
 
-特点：
-
-- 适合调 Dashboard 内部信息架构
-- 适合调长内容、会话列表、Context 面板
-- 也支持 Flutter hot reload
-
-### 3. Android 真机调悬浮窗口态
+Android 真机悬浮窗口态：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File agent/codex-bridge/scripts/run-dashboard-dev.ps1 -Platform android -Mode floating -AndroidDeviceId <ANDROID_DEVICE_ID>
 ```
 
-特点：
-
-- 适合最终确认手机手感
-- 支持 Flutter hot reload
-- 不需要先连真远控
-
-### 4. 正常模式启动
+正常 RustDesk 启动：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File agent/codex-bridge/scripts/run-dashboard-dev.ps1 -Platform windows -Mode normal
 ```
 
-不加 Dashboard dev 模式时，仍按正常 RustDesk 逻辑启动。
+脚本会从 `FLUTTER_BIN` 或 PATH 找 Flutter；Android 设备 ID 可通过 `-AndroidDeviceId` 或 `RUSTDESK_ANDROID_DEVICE_ID` 传入。
 
-## 这套调试流能看到什么
+### 2. Harness mock 模式
+
+用于快速调 UI，不依赖本机 Codex session：
+
+```powershell
+cd tools/agent_dashboard_harness
+.\run-web.ps1 -Mode floating
+.\run-web.ps1 -Mode full
+```
+
+### 3. Harness live 模式
+
+用于验证 Dashboard 与本机 debug bridge 的真实数据边界：
+
+```powershell
+cd tools/agent_dashboard_harness
+.\run-web-live.ps1 -Mode floating
+.\run-web-live.ps1 -Mode full
+```
+
+live 模式会启动：
+
+- `tools/agent_dashboard_harness/debug-bridge/server.mjs`
+- 本地 Web build server
+
+debug bridge 只绑定本机地址，日志目录和 `.log` 文件不进入 Git。`/health` 不返回完整 `CODEX_HOME` 路径。
+
+## 能看到什么
 
 ### `full` 模式
 
 - 完整 Dashboard 页面
-- 会话列表
+- conversation 列表
 - Chat
+- Timeline
+- Sessions
 - Context
-- mock 数据
-- `Simulate read-only / confirm / failure`
+- Skills
+- 状态卡片
+- mock agent 动作
 
 ### `floating` 模式
 
 - 模拟远控画布背景
 - 悬浮 Dashboard 窗口
-- 窗口最小化气泡
-- Chat / Timeline / Sessions / Context / Skills 五个 tab
+- 最小化入口
 - 会话选择 sheet
-- mock 数据
-- `Simulate read-only / confirm / failure`
+- task status bubble overlay
+- `done` / `failed` / `needs_confirmation` 状态提醒
+
+## 任务状态气泡调试
+
+任务状态气泡已经接入，不再是延期需求。
+
+当前可通过以下路径验证：
+
+- mock 模式里的 agent 状态模拟
+- live 模式里 bridge 返回的 structured `AgentResult`
+- Flutter test 中的 task bubble 用例
+
+期望行为：
+
+- 完成任务显示 `Done`
+- 失败任务显示 `Failed`
+- 等待确认显示 `Needs approval`
+- 同一 request/status 不重复弹
+- 点击气泡选中对应 conversation
+- 选中 conversation 后清理该 conversation 的气泡
 
 ## 热重载边界
 
-下面这些改动支持 `flutter run` 期间直接 hot reload：
+通常支持 hot reload：
 
 - Dart UI 布局
-- 样式
-- 文案
-- 悬浮窗口结构
+- 样式和文案
+- Dashboard 页面结构
+- floating window 结构
 - mock 交互
-- 会话切换 sheet
+- task bubble 展示
 
-下面这些改动通常不属于纯热重载范围：
+通常需要重新编译或重新启动：
 
 - Rust 层改动
-- FRB 绑定变化
-- 原生 Android / Windows runner 改动
-- protobuf / bridge 协议变化
-
-这类改动仍需要重新编译或重新启动。
+- Flutter Rust Bridge 绑定变化
+- protobuf / message 协议变化
+- Android / Windows runner 改动
+- native 权限和服务改动
 
 ## 推荐工作方式
 
-建议固定成这个顺序：
-
-1. 先用 `windows + floating` 做大部分 UI 迭代
-2. 再用 `windows + full` 检查 Dashboard 内容密度
-3. 最后用 `android + floating` 看真机手感
-4. UI 稳定后，再切回真远控链路验证实际行为
-
-## 延期需求记录
-
-- 任务结束状态气泡：用户希望后续参考 Codex pet 的体验，当 agent 任务完成、失败或等待确认时，用悬浮气泡展示当前对话状态，并支持点击回到对应会话。
-- 本轮只记录需求，不接入功能；等当前 Dashboard UI/UX 收尾完成后，先输出技术方案，再决定实现边界。
+1. 用 `tools/agent_dashboard_harness/run-web.ps1` 快速调 UI。
+2. 用 `tools/agent_dashboard_harness/run-web-live.ps1` 验证 live 数据边界。
+3. 用 `run-dashboard-dev.ps1 -Platform windows -Mode floating` 验证主工程桌面预览。
+4. 用 `run-dashboard-dev.ps1 -Platform android -Mode floating` 做真机手感验证。
+5. UI 稳定后，再回到真实 RustDesk 远控链路验证 `AgentCommand` / `AgentResult`。
 
 ## 后续建议
 
-下一步如果继续收尾，我建议做这两件事：
-
-1. 给 `floating` 开发模式补“预设窗口尺寸 / 预设横竖屏 / 预设 agent 状态”切换
-2. 把真实 `/agent` confirm/cancel 接进现在这套窗口 UI
+- 给 floating 模式补预设窗口尺寸、横竖屏和远控工具栏位置。
+- 增加 task bubble 在输入法、安全区、远控工具栏附近的避让检查。
+- 将真机验证结果补回 `docs/voice-codex-agent-dashboard-status-zh.md`。

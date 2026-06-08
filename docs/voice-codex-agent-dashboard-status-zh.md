@@ -1,143 +1,149 @@
 # RustDesk Agent Dashboard 状态
 
-更新时间：2026-06-03
+更新时间：2026-06-08
 
-## 本轮目标
+## 当前结论
 
-把当前 RustDesk 移动端的简陋聊天面板，升级成一套更接近 `hermes-wingman` 工作台组织方式的 Agent Dashboard，并继续复用当前已打通的 `/agent -> 本机 Codex bridge` 链路。
+Agent Dashboard 已经从“聊天面板改造”进入“结构化 agent 工作台”阶段。
 
-## 本轮已完成
+当前 Dashboard 主链路不再以 `/agent ...` 聊天文本为主要设计目标，而是通过 RustDesk session 发送正式 `AgentCommand`，再消费结构化 `AgentResult` 和 bridge task snapshot。
 
-### 1. Hermes 风格工作台界面已落地
+## 已完成
 
-- 已重做 `flutter/lib/common/widgets/agent_dashboard_page.dart`
-- 当前页面结构改为三栏工作台：
-  - 左栏：会话列表、搜索、项目筛选
-  - 中栏：消息主区、发送区、当前任务状态
-  - 右栏：项目 / session / profile / 上下文配置 / 预览
-- 视觉风格参考了 `hermes-wingman` 的组织方式：
-  - 工作台顶栏
-  - 玻璃面板感布局
-  - 会话列表卡片
-  - 状态 badge
-  - 更明确的上下文与任务区域
+### 1. 工作台 UI
 
-### 2. 会话模型能力补齐
+已落地：
 
-- 已增强 `flutter/lib/models/agent_dashboard_model.dart`
-- 新增能力：
-  - 会话搜索
-  - 项目筛选
-  - 会话 pin / unpin
-  - 会话重命名
-  - 会话删除
-  - 历史上下文开关
-  - 终端 transcript 上下文开关
-  - 会话运行状态跟踪：
-    - `idle`
-    - `running`
-    - `needsConfirmation`
-    - `completed`
-    - `failed`
+- `flutter/lib/common/widgets/agent_dashboard_page.dart`
+- `flutter/lib/common/widgets/agent_dashboard_dev_shell.dart`
+- `flutter/lib/common/widgets/agent_task_status_bubble_overlay.dart`
 
-### 3. Agent 结果分流更稳
+当前页面能力：
 
-- 当前 `[Agent:...]` 回包不再只依赖“当前选中会话”
-- 已增加“最近一次发起请求的会话”优先归属
-- 这样用户切换会话后，Agent 回包串到别的会话的概率会明显下降
+- conversation 列表
+- Chat / Timeline / Sessions / Context / Skills
+- project / profile / session 控制
+- history context 开关
+- terminal transcript context 开关
+- 状态卡片
+- full page 和 floating 预览
+- floating 最小化入口
+- task status bubble overlay
 
-### 4. 现有移动端入口继续生效
+### 2. 会话模型
 
-- `flutter/lib/mobile/pages/remote_page.dart`
-- `flutter/lib/mobile/pages/view_camera_page.dart`
-- 点击 `Text chat` 仍直接进入新的 Agent Dashboard
+已落地：
 
-### 5. 终端上下文能力保留
+- `flutter/lib/models/agent_dashboard_model.dart`
+- `flutter/lib/models/agent_dashboard_runtime_io.dart`
+- `flutter/lib/models/agent_dashboard_runtime_web.dart`
 
-- `flutter/lib/models/terminal_model.dart`
-- 仍支持把当前受控机最近终端 transcript 作为 prompt context 注入
+当前模型能力：
 
-## 当前行为说明
+- 会话搜索
+- project 筛选
+- pin / unpin
+- rename
+- delete
+- selected skill 管理
+- sessionRef 绑定
+- Codex session 恢复
+- task snapshot 应用
+- runtime status recovery
+- requestId / conversationId 路由
 
-- 当前发送仍复用兼容命令：
+### 3. 结构化 Agent 结果
+
+当前结果链路：
 
 ```text
-/agent <project> [profile=...] [session=...] <prompt>
+AgentCommand
+-> desktop bridge
+-> AgentResult
+-> AgentDashboardModel.handleAgentResultEvent()
+-> conversation state / timeline / bubble
 ```
 
-- Dashboard 里配置的：
-  - project
-  - session
-  - profile
-  - conversation history
-  - terminal transcript
+已完成的收敛：
 
-都会先被拼成兼容 `/agent` 命令再发到被控端。
+- 通过 `request_id` 归属到 conversation
+- task snapshot 可驱动状态恢复
+- structured result 有 dedupe
+- transport failure 可尝试从 task status 恢复
+- 确认 token 不进入普通聊天消息文本
 
-## 已验证
+### 4. 任务状态气泡
 
-- `flutter analyze` 已针对本轮相关文件跑过
-- 当前无新的编译错误
-- 剩余只有仓库里原有的 deprecated API 提示：
-  - `chat_page.dart`
-  - `remote_page.dart`
-  - `view_camera_page.dart`
-  - `chat_model.dart`
+已落地：
 
-## 当前存在问题
+- `AgentTaskStatusBubble`
+- `visibleTaskStatusBubbles`
+- `openTaskStatusBubble()`
+- `dismissTaskStatusBubble()`
+- `AgentTaskStatusBubbleOverlay`
 
-### 1. 结果归属仍是启发式，不是正式任务绑定
+当前行为：
 
-- 目前还是按“最近一次发起请求的会话”归属 Agent 回包
-- 这比“当前选中会话”稳，但还不是严格的 request_id 绑定
-- 真正彻底的方案仍然是：
-  - Flutter 侧接正式 `AgentResult`
-  - 会话里保存 request_id
-  - bridge / Rust / Flutter 做结构化关联
+- `done` / `failed` / `needs_confirmation` 会产生气泡
+- 同一 `request_id + status` 去重
+- 最多保留 2 个可见气泡
+- 点击气泡会打开并选中对应 conversation
+- 选中 conversation 后会清理对应气泡
+- 等待确认气泡是 sticky，完成和失败气泡有 TTL
 
-### 2. 仍主要依赖聊天文本兼容路由
+已有测试覆盖：
 
-- 现在 Dashboard 体验已经升级
-- 但底层发送仍主要依赖 `/agent ...` 文本兼容链路
-- 还没有把 `project / session / profile / executor` 全面切到正式 `AgentCommand`
+- structured done result creates one task status bubble
+- same request id and status does not duplicate task status bubble
+- openTaskStatusBubble selects routed conversation and clears its bubbles
+- selectConversation clears task status bubbles for that conversation
+- text agent status creates confirmation bubble
+- task status bubbles keep only the latest two items
+- structured confirmation token stays out of chat message text
 
-### 3. 终端上下文仍然偏粗粒度
+## 当前行为边界
 
-- 当前只支持拿最近 transcript
-- 还没有做：
-  - 指定某个终端会话
-  - 指定截取范围
-  - transcript 搜索
-  - 多终端上下文编排
+### 正式路径
 
-### 4. 还不是完整的 Hermes 功能面
+正式 Dashboard 任务发送应优先走：
 
-- 当前是“参考 Hermes 的工作台组织方式”，不是一比一移植
-- 还没做：
-  - 会话历史跨来源编排
-  - 会话标签体系
-  - 任务卡片流
-  - 结构化任务进度视图
-  - 任务恢复 / resume 选择器 UI
+```text
+sessionSendAgentCommand
+-> AgentCommand
+-> AgentResult
+```
 
-## 下一步建议
+### 兼容路径
 
-1. 先在手机真机上看新版 Dashboard 实际手感，确认布局、入口、会话切换是否顺手。
-2. 然后继续做正式协议收口：
-   - Flutter 直接发 `sessionSendAgentCommand`
-   - Flutter 直接收结构化 `AgentResult`
-   - 用 `request_id` 把任务和会话严格绑定
-3. 再补强工作台能力：
-   - 会话历史搜索
-   - terminal transcript 选择器
-   - 会话 resume 选择器
-   - 任务卡片 / 任务列表
+`/agent`、`/agent-confirm`、`/agent-cancel` 仍保留，主要用于旧入口、调试和 fallback。公开文档不再把它描述为 Dashboard 主路径。
 
-## 需要你手动处理的事项
+### 本地持久化
 
-- 手机端需要安装并打开最新 APK，实际看新版 Dashboard
-- 如果你要我继续做真机验证，需要你在手机上实际进入远控后的 `Text chat`
-- 如果界面布局、层级、按钮位置有具体偏好，你需要直接指出：
-  - 哪个区域太重
-  - 哪个区域太弱
-  - 更像 Hermes 的哪一块
+Flutter 本地持久化只应保留 UI 元数据，例如：
+
+- draft
+- pin / archive
+- selected profile
+- selected skill ids
+- 临时视图状态
+
+Codex session history、session paging 和 task snapshot 由桌面 bridge 作为权威源。
+
+## 仍需验证
+
+1. Android 真机横屏和竖屏下的 Dashboard 密度。
+2. 远控工具栏、安全区、输入法区域和 task bubble 的避让。
+3. 真远控链路下 task status bubble 是否在所有状态里稳定出现。
+4. 长 session 恢复时的性能和分页交互。
+5. 移动端语音入口和桌面 STT 配置闭环。
+
+## 不再成立的旧判断
+
+以下旧说法已经过时：
+
+- “当前发送仍复用兼容 `/agent` 命令”
+- “结果归属仍是启发式”
+- “仍主要依赖聊天文本兼容路由”
+- “任务状态气泡只是延期需求”
+
+这些内容已由结构化 `AgentCommand` / `AgentResult`、requestId 路由和 task status bubble 实现取代。

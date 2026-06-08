@@ -188,11 +188,14 @@ Current docs:
 - [Technical status (ZH)](docs/voice-codex-agent-tech-status-zh.md)
 - [Dashboard status (ZH)](docs/voice-codex-agent-dashboard-status-zh.md)
 - [Dashboard dev flow (ZH)](docs/agent-dashboard-dev-flow-zh.md)
-- [Dashboard optimization baseline (ZH)](docs/agent-dashboard-optimization-baseline-zh.md)
-- [Dashboard optimization audit (ZH)](docs/agent-dashboard-optimization-audit-zh.md)
-- [Task status bubble plan (ZH)](docs/agent-dashboard-task-status-bubble-tech-plan-zh.md)
+- [Task status bubble implementation status (ZH)](docs/agent-dashboard-task-status-bubble-tech-plan-zh.md)
 - [Local agent configuration (ZH)](docs/local-agent-configuration-zh.md)
 - [Self-hosted server configuration (ZH)](docs/rustdesk-selfhosted-status-zh.md)
+
+Historical and audit archives:
+
+- [Dashboard optimization baseline (ZH)](docs/agent-dashboard-optimization-baseline-zh.md)
+- [Dashboard optimization audit (ZH)](docs/agent-dashboard-optimization-audit-zh.md)
 
 ## Development Rules For Dashboard Work
 
