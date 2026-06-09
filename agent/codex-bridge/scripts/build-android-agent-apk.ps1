@@ -3,6 +3,8 @@ param(
     [string]$Abi = "arm64-v8a",
     [ValidateSet("debug", "release")]
     [string]$Mode = "debug",
+    [ValidateSet("flutter", "gradle")]
+    [string]$BuildBackend = "gradle",
     [string]$JavaHome = $env:JAVA_HOME,
     [string]$AndroidSdkRoot = $(if ($env:ANDROID_SDK_ROOT) { $env:ANDROID_SDK_ROOT } else { $env:ANDROID_HOME }),
     [string]$AndroidNdkVersion = "28.2.13676358",
@@ -12,7 +14,17 @@ param(
     [string]$VcpkgInstalledRoot = "",
     [string]$RustToolchain = "1.75.0-x86_64-pc-windows-msvc",
     [string]$CargoRegistryProtocol = "git",
-    [string]$MsysPerl = ""
+    [string]$MsysPerl = "",
+    [string]$CargoHome = $env:CARGO_HOME,
+    [string]$PubCache = $env:PUB_CACHE,
+    [string]$GradleUserHome = $env:GRADLE_USER_HOME,
+    [string]$PubHostedUrl = $env:PUB_HOSTED_URL,
+    [string]$FlutterStorageBaseUrl = $env:FLUTTER_STORAGE_BASE_URL,
+    [string]$HttpProxy = $env:HTTP_PROXY,
+    [string]$HttpsProxy = $env:HTTPS_PROXY,
+    [string]$AllProxy = $env:ALL_PROXY,
+    [string]$ApkSigner = "",
+    [switch]$SkipApkVerify
 )
 
 $ErrorActionPreference = "Stop"
@@ -67,6 +79,17 @@ function Resolve-MsysPerl {
     return $perl.FullName
 }
 
+function Set-OptionalEnvironmentVariable {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [string]$Value
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($Value)) {
+        Set-Item -Path "Env:$Name" -Value $Value
+    }
+}
+
 $repo = (Resolve-Path ".").Path
 if ([string]::IsNullOrWhiteSpace($VcpkgInstalledRoot)) {
     $VcpkgInstalledRoot = Join-Path $repo ".vcpkg-android-installed"
@@ -98,7 +121,11 @@ $javaExe = Join-Path $JavaHome "bin\java.exe"
 $flutterExe = Join-Path $FlutterBin "flutter.bat"
 $cmakeExe = Join-Path $VsCMakeBin "cmake.exe"
 $vcpkgExe = Join-Path $VcpkgRoot "vcpkg.exe"
+$gradleWrapper = Join-Path $repo "flutter\android\gradlew.bat"
 $msysPerlExe = Resolve-MsysPerl $MsysPerl
+if ([string]::IsNullOrWhiteSpace($ApkSigner)) {
+    $ApkSigner = Join-Path $AndroidSdkRoot "build-tools\34.0.0\apksigner.bat"
+}
 
 Require-Path $javaExe "JDK is not available."
 Require-Path $sdkManager "Android command-line tools are not available."
@@ -108,6 +135,7 @@ Require-Path $androidNdkHome "Android NDK is not installed."
 Require-Path $flutterExe "Flutter is not available."
 Require-Path $cmakeExe "CMake is not available."
 Require-Path $vcpkgExe "vcpkg is not available."
+Require-Path $gradleWrapper "Gradle wrapper is not available."
 Require-Path $msysPerlExe "MSYS perl is not available."
 
 switch ($Abi) {
@@ -143,6 +171,9 @@ $env:ANDROID_HOME = $AndroidSdkRoot
 $env:ANDROID_SDK_ROOT = $AndroidSdkRoot
 $env:ANDROID_NDK_HOME = $androidNdkHome
 $env:ANDROID_NDK_ROOT = $androidNdkHome
+$env:CARGO_HOME = $CargoHome
+$env:PUB_CACHE = $PubCache
+$env:GRADLE_USER_HOME = $GradleUserHome
 $env:VCPKG_ROOT = $VcpkgRoot
 $env:VCPKG_INSTALLED_ROOT = $VcpkgInstalledRoot
 $env:CARGO_TARGET_DIR = $androidTargetDir
@@ -174,6 +205,11 @@ $env:OPENSSL_NO_VENDOR = "1"
 if ($env:RUSTLS_PLATFORM_VERIFIER_MAVEN_DIR) {
     Require-Path $env:RUSTLS_PLATFORM_VERIFIER_MAVEN_DIR "Configured rustls-platform-verifier Maven directory is not available."
 }
+Set-OptionalEnvironmentVariable -Name "PUB_HOSTED_URL" -Value $PubHostedUrl
+Set-OptionalEnvironmentVariable -Name "FLUTTER_STORAGE_BASE_URL" -Value $FlutterStorageBaseUrl
+Set-OptionalEnvironmentVariable -Name "HTTP_PROXY" -Value $HttpProxy
+Set-OptionalEnvironmentVariable -Name "HTTPS_PROXY" -Value $HttpsProxy
+Set-OptionalEnvironmentVariable -Name "ALL_PROXY" -Value $AllProxy
 Set-Item -Path Env:CC_aarch64-linux-android -Value $clangExe
 Set-Item -Path Env:CXX_aarch64-linux-android -Value $clangxxExe
 Set-Item -Path Env:AR_aarch64-linux-android -Value $llvmArExe
@@ -244,11 +280,29 @@ Invoke-Step "Fetch Flutter packages" {
 }
 
 Invoke-Step "Build Android $Abi $Mode APK" {
-    Push-Location (Join-Path $repo "flutter")
-    try {
-        & $flutterExe build apk "--$Mode" --target-platform $flutterTarget --split-per-abi
-    } finally {
-        Pop-Location
+    if ($BuildBackend -eq "gradle") {
+        $gradleTask = if ($Mode -eq "release") { "assembleRelease" } else { "assembleDebug" }
+        Push-Location (Join-Path $repo "flutter\android")
+        try {
+            & $gradleWrapper `
+                "-Ptarget-platform=$flutterTarget" `
+                "-Ptarget=lib/main.dart" `
+                "-Pbase-application-name=android.app.Application" `
+                "-Pdart-obfuscation=false" `
+                "-Ptrack-widget-creation=true" `
+                "-Ptree-shake-icons=false" `
+                "-Psplit-per-abi=true" `
+                $gradleTask
+        } finally {
+            Pop-Location
+        }
+    } else {
+        Push-Location (Join-Path $repo "flutter")
+        try {
+            & $flutterExe --no-version-check build apk "--$Mode" --target-platform $flutterTarget --split-per-abi
+        } finally {
+            Pop-Location
+        }
     }
 }
 
@@ -257,6 +311,16 @@ if (-not (Test-Path $apk)) {
     $apk = Join-Path $repo "flutter\build\app\outputs\flutter-apk\app-$Mode.apk"
 }
 Require-Path $apk "APK was not produced."
+
+if (-not $SkipApkVerify) {
+    if (Test-Path $ApkSigner) {
+        Invoke-Step "Verify APK signature" {
+            & $ApkSigner verify --print-certs $apk
+        }
+    } else {
+        Write-Warning "APK signer not found at $ApkSigner; skipping signature verification."
+    }
+}
 
 Write-Host ""
 Write-Host "Android APK ready:"

@@ -188,6 +188,8 @@ Current docs:
 - [Technical status (ZH)](docs/voice-codex-agent-tech-status-zh.md)
 - [Dashboard status (ZH)](docs/voice-codex-agent-dashboard-status-zh.md)
 - [Dashboard dev flow (ZH)](docs/agent-dashboard-dev-flow-zh.md)
+- [Android APK build notes (ZH)](docs/android-apk-build-notes-zh.md)
+- [Windows release build notes (ZH)](docs/windows-release-build-notes-zh.md)
 - [Task status bubble implementation status (ZH)](docs/agent-dashboard-task-status-bubble-tech-plan-zh.md)
 - [Local agent configuration (ZH)](docs/local-agent-configuration-zh.md)
 - [Self-hosted server configuration (ZH)](docs/rustdesk-selfhosted-status-zh.md)

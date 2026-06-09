@@ -7,8 +7,14 @@ param(
     [string]$WingetNinjaBin = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe",
     [string]$PythonDir = $env:PYTHON_HOME,
     [string]$FlutterBin = $env:FLUTTER_BIN,
-    [string]$RustToolchain = "1.75.0-x86_64-pc-windows-msvc",
-    [string]$CargoRegistryProtocol = "git",
+    [string]$RustToolchain = $(if ($env:RUSTUP_TOOLCHAIN) { $env:RUSTUP_TOOLCHAIN } else { "1.75.0-x86_64-pc-windows-msvc" }),
+    [string]$CargoRegistryProtocol = $(if ($env:CARGO_REGISTRIES_CRATES_IO_PROTOCOL) { $env:CARGO_REGISTRIES_CRATES_IO_PROTOCOL } else { "sparse" }),
+    [string]$CargoHome = $env:CARGO_HOME,
+    [string]$PubCache = $env:PUB_CACHE,
+    [string]$PubHostedUrl = $env:PUB_HOSTED_URL,
+    [string]$FlutterStorageBaseUrl = $env:FLUTTER_STORAGE_BASE_URL,
+    [string]$Cc = $env:CC,
+    [string]$Cxx = $env:CXX,
     [ValidateSet("check", "rust-release", "flutter-release")]
     [string]$Mode = "check"
 )
@@ -56,12 +62,47 @@ function Get-DeveloperModeState {
     }
 }
 
+function Add-CmdEnvLine {
+    param(
+        [Parameter(Mandatory = $true)][System.Collections.Generic.List[string]]$Lines,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [string]$Value
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($Value)) {
+        $escaped = $Value.Replace('"', '""')
+        $Lines.Add("set `"$Name=$escaped`"")
+    }
+}
+
+function Resolve-WindowsReleaseExe {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $preferred = Join-Path $RepoRoot "flutter\build\windows\x64\runner\Release\rustdesk.exe"
+    if (Test-Path $preferred) {
+        return $preferred
+    }
+
+    $fallback = Join-Path $RepoRoot "flutter\build\windows\x64\runner\rustdesk.exe"
+    if (Test-Path $fallback) {
+        return $fallback
+    }
+
+    return $preferred
+}
+
 $repo = (Resolve-Path ".").Path
 if ([string]::IsNullOrWhiteSpace($VcpkgInstalledRoot)) {
     $VcpkgInstalledRoot = Join-Path $repo ".vcpkg-installed"
 }
 if ([string]::IsNullOrWhiteSpace($VcpkgRoot)) {
     $VcpkgRoot = $VcpkgInstalledRoot
+}
+if ([string]::IsNullOrWhiteSpace($Cc)) {
+    $Cc = "cl"
+}
+if ([string]::IsNullOrWhiteSpace($Cxx)) {
+    $Cxx = "cl"
 }
 
 if ([string]::IsNullOrWhiteSpace($VsDevCmd) -or -not (Test-Path $VsDevCmd)) {
@@ -126,21 +167,27 @@ switch ($Mode) {
     }
 }
 
-$cmd = @"
-@echo off
-set "PROCESSOR_ARCHITECTURE=AMD64"
-set "PROCESSOR_ARCHITEW6432=AMD64"
-call "$VsDevCmd" >nul
-if errorlevel 1 exit /b %errorlevel%
-set "PATH=$path"
-set "RUSTUP_TOOLCHAIN=$RustToolchain"
-set "CARGO_REGISTRIES_CRATES_IO_PROTOCOL=$CargoRegistryProtocol"
-set "LIBCLANG_PATH=$LlvmBin"
-set "VCPKG_ROOT=$VcpkgRoot"
-set "VCPKG_INSTALLED_ROOT=$VcpkgInstalledRoot"
-cd /d "$repo"
-$cargoCommand
-"@
+$cmdLines = [System.Collections.Generic.List[string]]::new()
+$cmdLines.Add("@echo off")
+$cmdLines.Add('set "PROCESSOR_ARCHITECTURE=AMD64"')
+$cmdLines.Add('set "PROCESSOR_ARCHITEW6432=AMD64"')
+$cmdLines.Add("call `"$VsDevCmd`" >nul")
+$cmdLines.Add("if errorlevel 1 exit /b %errorlevel%")
+$cmdLines.Add("set `"PATH=$path`"")
+Add-CmdEnvLine -Lines $cmdLines -Name "RUSTUP_TOOLCHAIN" -Value $RustToolchain
+Add-CmdEnvLine -Lines $cmdLines -Name "CARGO_REGISTRIES_CRATES_IO_PROTOCOL" -Value $CargoRegistryProtocol
+Add-CmdEnvLine -Lines $cmdLines -Name "LIBCLANG_PATH" -Value $LlvmBin
+Add-CmdEnvLine -Lines $cmdLines -Name "VCPKG_ROOT" -Value $VcpkgRoot
+Add-CmdEnvLine -Lines $cmdLines -Name "VCPKG_INSTALLED_ROOT" -Value $VcpkgInstalledRoot
+Add-CmdEnvLine -Lines $cmdLines -Name "CARGO_HOME" -Value $CargoHome
+Add-CmdEnvLine -Lines $cmdLines -Name "PUB_CACHE" -Value $PubCache
+Add-CmdEnvLine -Lines $cmdLines -Name "PUB_HOSTED_URL" -Value $PubHostedUrl
+Add-CmdEnvLine -Lines $cmdLines -Name "FLUTTER_STORAGE_BASE_URL" -Value $FlutterStorageBaseUrl
+Add-CmdEnvLine -Lines $cmdLines -Name "CC" -Value $Cc
+Add-CmdEnvLine -Lines $cmdLines -Name "CXX" -Value $Cxx
+$cmdLines.Add("cd /d `"$repo`"")
+$cmdLines.Add($cargoCommand)
+$cmd = ($cmdLines -join "`r`n") + "`r`n"
 
 Write-Host "Running $Mode build command:"
 Write-Host $cargoCommand
@@ -154,4 +201,20 @@ try {
     }
 } finally {
     Remove-Item -LiteralPath $tmpCmd -Force -ErrorAction SilentlyContinue
+}
+
+if ($Mode -eq "flutter-release") {
+    $releaseExe = Resolve-WindowsReleaseExe -RepoRoot $repo
+    if (-not (Test-Path $releaseExe)) {
+        throw "Windows release executable was not produced. Expected: $releaseExe"
+    }
+
+    Write-Host ""
+    Write-Host "Verifying Windows release executable:"
+    Write-Host $releaseExe
+
+    & $releaseExe --version
+    if ($LASTEXITCODE -ne 0) {
+        throw "rustdesk.exe --version failed with exit code $LASTEXITCODE"
+    }
 }

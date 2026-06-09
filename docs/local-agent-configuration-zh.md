@@ -22,6 +22,14 @@
 | `ANDROID_SDK_ROOT` / `ANDROID_HOME` | Android SDK 根目录 |
 | `FLUTTER_BIN` | Flutter `bin` 目录 |
 | `PYTHON_HOME` | Python 安装目录 |
+| `RUSTUP_TOOLCHAIN` | Rust 工具链，Windows 当前默认使用 `1.75.0-x86_64-pc-windows-msvc` |
+| `CARGO_HOME` | Cargo 缓存目录 |
+| `PUB_CACHE` | Flutter Pub 缓存目录 |
+| `GRADLE_USER_HOME` | Gradle 缓存目录 |
+| `CARGO_REGISTRIES_CRATES_IO_PROTOCOL` | Cargo registry 协议，建议 `sparse` |
+| `PUB_HOSTED_URL` | Flutter Pub 镜像地址 |
+| `FLUTTER_STORAGE_BASE_URL` | Flutter engine Maven 镜像或本地仓库地址 |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` | Android 构建需要时的代理配置 |
 | `RUSTDESK_ANDROID_DEVICE_ID` | Flutter Android 调试设备 ID |
 | `RUSTDESK_HOST_IP` | 自建 RustDesk server 对客户端可见的 IP 或域名 |
 | `RUSTDESK_INSTALL_EXE` | 本机已安装 RustDesk / Pocket-Codex exe 路径 |
@@ -34,8 +42,15 @@ $env:RUSTDESK_VS_DEV_CMD = "<VS_VCVARS64_PATH>"
 $env:RUSTDESK_VS_CMAKE_BIN = "<VS_CMAKE_BIN>"
 $env:LLVM_BIN = "<LLVM_BIN>"
 $env:VCPKG_ROOT = "<VCPKG_ROOT>"
+$env:VCPKG_INSTALLED_ROOT = "<VCPKG_INSTALLED_ROOT>"
 $env:FLUTTER_BIN = "<FLUTTER_BIN>"
+$env:PYTHON_HOME = "<PYTHON_HOME>"
+$env:RUSTUP_TOOLCHAIN = "1.75.0-x86_64-pc-windows-msvc"
+$env:CARGO_REGISTRIES_CRATES_IO_PROTOCOL = "sparse"
 $env:ANDROID_SDK_ROOT = "<ANDROID_SDK_ROOT>"
+$env:CARGO_HOME = "<CARGO_HOME>"
+$env:PUB_CACHE = "<PUB_CACHE>"
+$env:GRADLE_USER_HOME = "<GRADLE_USER_HOME>"
 $env:RUSTDESK_HOST_IP = "<HOST_IP_OR_DOMAIN>"
 ```
 
@@ -59,6 +74,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File agent/codex-bridge/scripts/i
 powershell -NoProfile -ExecutionPolicy Bypass -File agent/codex-bridge/scripts/build-windows-agent.ps1 -Mode check
 ```
 
+运行 Windows release Flutter 构建：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File agent/codex-bridge/scripts/build-windows-agent.ps1 `
+  -Mode flutter-release
+```
+
 如不想设置环境变量，也可以直接传参：
 
 ```powershell
@@ -70,13 +92,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File agent/codex-bridge/scripts/b
   -Mode check
 ```
 
+Windows release 产物、已知坑位和 Flutter SDK 边界见 [Windows Release 构建说明](windows-release-build-notes-zh.md)。
+
 ## Android 构建和安装
 
 构建 Android APK：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File agent/codex-bridge/scripts/build-android-agent-apk.ps1 `
-  -Mode debug
+  -Mode debug `
+  -BuildBackend gradle
+```
+
+如需跳过 APK 签名校验：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File agent/codex-bridge/scripts/build-android-agent-apk.ps1 `
+  -Mode debug `
+  -SkipApkVerify
 ```
 
 安装到已授权 USB 调试设备：
@@ -91,6 +124,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File agent/codex-bridge/scripts/i
 powershell -NoProfile -ExecutionPolicy Bypass -File agent/codex-bridge/scripts/install-android-agent-apk.ps1 `
   -Serial "<ANDROID_DEVICE_ID>"
 ```
+
+Android 打包问题排查和已知坑位见 [Android APK 打包说明](android-apk-build-notes-zh.md)。
 
 ## iOS Google / Firebase 配置
 

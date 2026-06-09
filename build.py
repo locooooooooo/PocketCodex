@@ -26,6 +26,63 @@ flutter_build_dir_2 = f'flutter/{flutter_build_dir}'
 skip_cargo = False
 
 
+def ensure_windows_release_layout():
+    release_dir = Path(flutter_build_dir_2)
+    runner_dir = release_dir.parent
+    if release_dir.exists():
+        return release_dir
+    if not windows or not runner_dir.exists():
+        return release_dir
+
+    release_dir.mkdir(parents=True, exist_ok=True)
+    for entry in runner_dir.iterdir():
+        if entry.name == 'Release':
+            continue
+        destination = release_dir / entry.name
+        if destination.exists():
+            if destination.is_dir():
+                shutil.rmtree(destination)
+            else:
+                destination.unlink()
+        if entry.is_dir():
+            shutil.copytree(entry, destination)
+        else:
+            shutil.copy2(entry, destination)
+    return release_dir
+
+
+def sync_windows_ephemeral_engine_files():
+    flutter_root = os.environ.get("FLUTTER_ROOT")
+    if not flutter_root:
+        flutter_cmd = shutil.which("flutter")
+        if flutter_cmd:
+            flutter_root = str(Path(flutter_cmd).resolve().parent.parent)
+    if not flutter_root:
+        return
+
+    release_engine_dir = Path(flutter_root) / "bin" / "cache" / "artifacts" / "engine" / "windows-x64-release"
+    ephemeral_dir = Path("flutter/windows/flutter/ephemeral")
+    if not release_engine_dir.exists():
+        return
+    ephemeral_dir.mkdir(parents=True, exist_ok=True)
+
+    required = [
+        "flutter_windows.dll",
+        "flutter_windows.dll.lib",
+        "flutter_windows.dll.exp",
+        "flutter_windows.dll.pdb",
+        "flutter_windows.h",
+        "flutter_export.h",
+        "flutter_messenger.h",
+        "flutter_plugin_registrar.h",
+        "flutter_texture_registrar.h",
+    ]
+    for name in required:
+        source = release_engine_dir / name
+        if source.exists():
+            shutil.copy2(source, ephemeral_dir / name)
+
+
 def get_deb_arch() -> str:
     custom_arch = os.environ.get("DEB_ARCH")
     if custom_arch is None:
@@ -437,9 +494,11 @@ def build_flutter_windows(version, features, skip_portable_pack):
         if not os.path.exists("target/release/librustdesk.dll"):
             print("cargo build failed, please check rust source code.")
             exit(-1)
+    sync_windows_ephemeral_engine_files()
     os.chdir('flutter')
     system2('flutter build windows --release')
     os.chdir('..')
+    ensure_windows_release_layout()
     shutil.copy2('target/release/deps/dylib_virtual_display.dll',
                  flutter_build_dir_2)
     if skip_portable_pack:

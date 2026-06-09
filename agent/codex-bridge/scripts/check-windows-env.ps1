@@ -80,7 +80,7 @@ if ($missingRequired.Count -gt 0) {
     Write-Host ""
     Write-Host "Configuration hints:" -ForegroundColor Yellow
     Write-Host "  - Set RUSTDESK_VS_DEV_CMD or pass -VsDevCmd for vcvars64.bat."
-    Write-Host "  - Set RUSTDESK_VS_CMAKE_BIN or pass -VsCMakeBin for Visual Studio CMake."
+    Write-Host "  - Set RUSTDESK_VS_CMAKE_BIN or pass -VsCMakeBin for Visual Studio or standalone CMake."
     Write-Host "  - Set LLVM_BIN or pass -LlvmBin for LLVM/bin."
     exit 1
 }
