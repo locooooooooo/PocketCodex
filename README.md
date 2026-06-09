@@ -190,9 +190,16 @@ Current docs:
 - [Dashboard dev flow (ZH)](docs/agent-dashboard-dev-flow-zh.md)
 - [Android APK build notes (ZH)](docs/android-apk-build-notes-zh.md)
 - [Windows release build notes (ZH)](docs/windows-release-build-notes-zh.md)
+- [Mobile sessions troubleshooting notes (ZH)](docs/agent-dashboard-mobile-sessions-fix-notes-zh.md)
 - [Task status bubble implementation status (ZH)](docs/agent-dashboard-task-status-bubble-tech-plan-zh.md)
 - [Local agent configuration (ZH)](docs/local-agent-configuration-zh.md)
 - [Self-hosted server configuration (ZH)](docs/rustdesk-selfhosted-status-zh.md)
+
+Useful local scripts:
+
+- `agent/codex-bridge/scripts/check-agent-dashboard-sessions.ps1`
+- `agent/codex-bridge/scripts/smoke-test.ps1`
+- `agent/codex-bridge/scripts/configure-local-agent.ps1`
 
 Historical and audit archives:
 

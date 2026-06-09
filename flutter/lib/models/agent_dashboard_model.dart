@@ -2589,13 +2589,17 @@ class AgentDashboardModel with ChangeNotifier {
   }
 
   Future<void> _requestSessionCatalogReload({required bool notify}) async {
+    final preserveExistingSessions = runtime.defersSkillCatalogLoad;
     try {
       final sessions = await runtime.loadSessions(
         conversationId: _selectedConversationId,
       );
       if (runtime.defersSkillCatalogLoad) {
-        _sessionSummaries = [];
-        _sessionsLoaded = false;
+        if (_sessionSummaries.isEmpty) {
+          _sessionsLoaded = false;
+        } else {
+          _sessionsLoaded = true;
+        }
       } else {
         _sessionSummaries = sessions;
         _sessionsLoaded = true;
@@ -2606,8 +2610,10 @@ class AgentDashboardModel with ChangeNotifier {
       }
     } catch (e) {
       debugPrint('[AgentDashboardModel] Failed to reload session catalog: $e');
-      _sessionSummaries = [];
-      _sessionsLoaded = false;
+      if (!preserveExistingSessions || _sessionSummaries.isEmpty) {
+        _sessionSummaries = [];
+        _sessionsLoaded = false;
+      }
     } finally {
       if (notify) {
         notifyListeners();

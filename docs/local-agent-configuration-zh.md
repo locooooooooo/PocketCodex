@@ -94,6 +94,31 @@ powershell -NoProfile -ExecutionPolicy Bypass -File agent/codex-bridge/scripts/b
 
 Windows release 产物、已知坑位和 Flutter SDK 边界见 [Windows Release 构建说明](windows-release-build-notes-zh.md)。
 
+## 安装后自检
+
+如果桌面 bridge 已经能对话，但手机端 `Sessions` 页面空白，先跑仓库自带自检：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File agent/codex-bridge/scripts/check-agent-dashboard-sessions.ps1 `
+  -Project "<PROJECT_ID>"
+```
+
+这个脚本会依次检查：
+
+- `/health` 是否正常。
+- `/agent/config` 是否加载到项目配置。
+- 普通只读 `run` 是否可执行。
+- 本机 `/agent/sessions` 是否有数据。
+- 远程 `list_sessions` envelope 是否能返回结构化 sessions catalog。
+
+如果只想检查 sessions，不跑普通只读对话：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File agent/codex-bridge/scripts/check-agent-dashboard-sessions.ps1 `
+  -Project "<PROJECT_ID>" `
+  -SkipRunProbe
+```
+
 ## Android 构建和安装
 
 构建 Android APK：

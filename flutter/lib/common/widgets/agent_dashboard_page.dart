@@ -2245,6 +2245,35 @@ class _SessionsPanelState extends State<_SessionsPanel> {
           title: 'Sessions',
           subtitle: 'Open a desktop Codex session as the active conversation.',
           icon: Icons.history_outlined,
+          trailing: Wrap(
+            spacing: 6,
+            children: [
+              if (model.projectFilter != null)
+                IconButton(
+                  tooltip: 'Show all projects',
+                  onPressed: () {
+                    model.setProjectFilter(null);
+                  },
+                  icon: const Icon(Icons.filter_alt_off_outlined, size: 18),
+                  visualDensity: VisualDensity.compact,
+                ),
+              IconButton(
+                tooltip: _refreshingSessionCatalog
+                    ? 'Refreshing session catalog'
+                    : 'Refresh sessions',
+                onPressed:
+                    _refreshingSessionCatalog ? null : _refreshSessionCatalog,
+                icon: _refreshingSessionCatalog
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.refresh_outlined, size: 18),
+                visualDensity: VisualDensity.compact,
+              ),
+            ],
+          ),
         ),
         const SizedBox(height: 12),
         if (!model.sessionsLoaded)
@@ -2684,11 +2713,13 @@ class _PanelHeader extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.icon,
+    this.trailing,
   });
 
   final String title;
   final String subtitle;
   final IconData icon;
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
@@ -2732,6 +2763,10 @@ class _PanelHeader extends StatelessWidget {
             ],
           ),
         ),
+        if (trailing != null) ...[
+          const SizedBox(width: 12),
+          trailing!,
+        ],
       ],
     );
   }

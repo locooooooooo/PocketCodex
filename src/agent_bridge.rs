@@ -32,6 +32,7 @@ const MAX_REQUEST_LEN: usize = MAX_BODY_LEN + 8 * 1024;
 const MAX_RESPONSE_TEXT: usize = 12_000;
 const MAX_TASK_TIMELINE: usize = 64;
 const MAX_TASK_RAW_EVENTS: usize = 48;
+const MAX_REMOTE_SESSION_CATALOG_ITEMS: usize = 60;
 const BRIDGE_START_RETRIES: usize = 20;
 const BRIDGE_START_RETRY_MS: u64 = 250;
 const RUN_REQUEST_RECOVERY_RETRIES: usize = 12;
@@ -1134,7 +1135,7 @@ fn handle_envelope_run(mut req: AgentRunRequest, envelope: AgentEnvelope) -> Res
             dashboard_detail(
                 json!({
                 "kind": "sessions",
-                "items": public_session_summaries(handle_sessions()?),
+                "items": limited_public_session_summaries(handle_sessions()?),
                 }),
                 conversation_id.as_deref(),
             ),
@@ -1579,6 +1580,16 @@ fn public_task_info(task: AgentTaskInfo) -> PublicAgentTaskInfo {
 
 fn public_session_summaries(sessions: Vec<CodexSessionSummary>) -> Vec<CodexSessionSummary> {
     sessions.into_iter().map(public_session_summary).collect()
+}
+
+fn limited_public_session_summaries(
+    sessions: Vec<CodexSessionSummary>,
+) -> Vec<CodexSessionSummary> {
+    sessions
+        .into_iter()
+        .take(MAX_REMOTE_SESSION_CATALOG_ITEMS)
+        .map(public_session_summary)
+        .collect()
 }
 
 fn public_session_summary(mut session: CodexSessionSummary) -> CodexSessionSummary {
