@@ -2394,6 +2394,7 @@ impl Connection {
                 request_id: request_id.clone(),
                 project: project.clone(),
                 prompt,
+                conversation_id: None,
                 mode,
                 require_confirmation,
                 executor,

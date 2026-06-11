@@ -32,11 +32,11 @@ const MAX_REQUEST_LEN: usize = MAX_BODY_LEN + 8 * 1024;
 const MAX_RESPONSE_TEXT: usize = 12_000;
 const MAX_TASK_TIMELINE: usize = 64;
 const MAX_TASK_RAW_EVENTS: usize = 48;
-const MAX_REMOTE_SESSION_CATALOG_ITEMS: usize = 60;
 const BRIDGE_START_RETRIES: usize = 20;
 const BRIDGE_START_RETRY_MS: u64 = 250;
 const RUN_REQUEST_RECOVERY_RETRIES: usize = 12;
 const RUN_REQUEST_RECOVERY_RETRY_MS: u64 = 500;
+const BRIDGE_DATA_DIR_ENV: &str = "RUSTDESK_AGENT_BRIDGE_DATA_DIR";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -103,6 +103,12 @@ pub struct AgentRunRequest {
     pub request_id: String,
     pub project: String,
     pub prompt: String,
+    #[serde(
+        default,
+        alias = "conversationId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub conversation_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -218,6 +224,17 @@ pub struct PublicAgentTaskInfo {
     pub detail_json: String,
     #[serde(default)]
     pub timeline: Vec<AgentTimelineEvent>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentSessionBinding {
+    conversation_id: String,
+    project: String,
+    agent: String,
+    agent_session_id: String,
+    agent_ctx_seq: u64,
+    updated_at: u128,
 }
 
 #[derive(Debug, Clone)]
@@ -537,6 +554,42 @@ fn resolve_target(req: &AgentRunRequest) -> Result<ProjectConfig> {
         }
     }
     Ok(target)
+}
+
+fn apply_bound_session_for_continue(req: &mut AgentRunRequest, conversation_id: Option<&str>) {
+    let Some(conversation_id) = conversation_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    let has_explicit_session = req
+        .session
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| {
+            !value.is_empty()
+                && !value.eq_ignore_ascii_case("@last")
+                && !value.eq_ignore_ascii_case("last")
+        })
+        .is_some();
+    if has_explicit_session || req.resume_last != Some(true) {
+        return;
+    }
+    let project = req.project.trim();
+    let Some(binding) = latest_agent_session_binding(
+        conversation_id,
+        if project.is_empty() {
+            None
+        } else {
+            Some(project)
+        },
+        "codex",
+    ) else {
+        return;
+    };
+    req.session = Some(binding.agent_session_id);
+    req.resume_last = Some(true);
 }
 
 fn resolve_project_from_session(
@@ -1088,13 +1141,15 @@ fn handle_run(req: AgentRunRequest) -> Result<AgentResponse> {
     if let Some(envelope) = parse_agent_envelope(&req.prompt) {
         return handle_envelope_run(req, envelope);
     }
-    execute_run_request(req, None)
+    let conversation_id = req.conversation_id.clone();
+    execute_run_request(req, conversation_id)
 }
 
 fn execute_run_request(
-    req: AgentRunRequest,
+    mut req: AgentRunRequest,
     conversation_id: Option<String>,
 ) -> Result<AgentResponse> {
+    apply_bound_session_for_continue(&mut req, conversation_id.as_deref());
     let project = resolve_target(&req)?;
     let mode = req.mode.as_deref().unwrap_or("read-only");
     let write_requested = mode.eq_ignore_ascii_case("workspace-write")
@@ -1161,7 +1216,10 @@ fn handle_envelope_run(mut req: AgentRunRequest, envelope: AgentEnvelope) -> Res
         .clone()
         .or(envelope.kind.clone())
         .unwrap_or_else(|| "run".to_owned());
-    let conversation_id = envelope.conversation_id.clone();
+    let conversation_id = envelope
+        .conversation_id
+        .clone()
+        .or_else(|| req.conversation_id.clone());
     match action.as_str() {
         "list_sessions" => Ok(simple_dashboard_response(
             req.request_id,
@@ -1171,7 +1229,7 @@ fn handle_envelope_run(mut req: AgentRunRequest, envelope: AgentEnvelope) -> Res
             dashboard_detail(
                 json!({
                 "kind": "sessions",
-                "items": limited_public_session_summaries(handle_sessions()?),
+                "items": public_session_summaries(handle_sessions()?),
                 }),
                 conversation_id.as_deref(),
             ),
@@ -1618,16 +1676,6 @@ fn public_session_summaries(sessions: Vec<CodexSessionSummary>) -> Vec<CodexSess
     sessions.into_iter().map(public_session_summary).collect()
 }
 
-fn limited_public_session_summaries(
-    sessions: Vec<CodexSessionSummary>,
-) -> Vec<CodexSessionSummary> {
-    sessions
-        .into_iter()
-        .take(MAX_REMOTE_SESSION_CATALOG_ITEMS)
-        .map(public_session_summary)
-        .collect()
-}
-
 fn public_session_summary(mut session: CodexSessionSummary) -> CodexSessionSummary {
     let project_id = if session.project_id.trim().is_empty() {
         project_id_from_path(&session.project_path)
@@ -1804,6 +1852,25 @@ fn conversation_detail_json(
         }
     }
     Some(value.to_string())
+}
+
+fn detail_with_binding(mut detail: Value, binding: Option<&AgentSessionBinding>) -> Value {
+    let Some(binding) = binding else {
+        return detail;
+    };
+    if let Some(obj) = detail.as_object_mut() {
+        obj.insert("binding".to_owned(), binding_detail_value(binding));
+        obj.insert(
+            "agentSessionId".to_owned(),
+            json!(&binding.agent_session_id),
+        );
+        return detail;
+    }
+    json!({
+        "detail": detail,
+        "binding": binding_detail_value(binding),
+        "agentSessionId": &binding.agent_session_id,
+    })
 }
 
 fn parse_detail_json_value(raw: &str) -> Option<Value> {
@@ -1988,6 +2055,10 @@ fn handle_voice_transcribe(req: VoiceEnvelope) -> Result<Value> {
 
 fn handle_voice_run(req: AgentEnvelope) -> Result<AgentResponse> {
     let route = req.route.unwrap_or_default();
+    let conversation_id = req
+        .conversation_id
+        .clone()
+        .filter(|value| !value.trim().is_empty());
     let voice = req.voice.unwrap_or_default();
     let project = route
         .project_id
@@ -2005,9 +2076,8 @@ fn handle_voice_run(req: AgentEnvelope) -> Result<AgentResponse> {
         .normalized_prompt
         .or(req.prompt)
         .unwrap_or_else(|| transcript.clone());
-    let request_id = req
-        .conversation_id
-        .filter(|value| !value.trim().is_empty())
+    let request_id = conversation_id
+        .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let detail_json = json!({
         "kind": "voice",
@@ -2030,6 +2100,7 @@ fn handle_voice_run(req: AgentEnvelope) -> Result<AgentResponse> {
         request_id,
         project,
         prompt,
+        conversation_id,
         mode: Some("read-only".to_owned()),
         require_confirmation: Some(true),
         executor: None,
@@ -2150,6 +2221,16 @@ fn run_codex(
     };
     let resolved_session_id = extract_codex_thread_id(&stdout)
         .or_else(|| resolve_result_session_id(&project, &session_index_before));
+    let binding = if output.status.success() {
+        append_agent_session_binding(
+            conversation_id,
+            &project.id,
+            "codex",
+            resolved_session_id.as_deref(),
+        )
+    } else {
+        None
+    };
     upsert_task(
         &request_id,
         &project.id,
@@ -2161,14 +2242,17 @@ fn run_codex(
         None,
         conversation_detail_json(
             conversation_id,
-            Some(json!({
-                "kind": "codexResult",
-                "stdout": truncate_text(&stdout),
-                "stderr": truncate_text(&stderr),
-                "exitCode": exit_code,
-                "sandbox": sandbox,
-                "sessionId": resolved_session_id,
-            })),
+            Some(detail_with_binding(
+                json!({
+                    "kind": "codexResult",
+                    "stdout": truncate_text(&stdout),
+                    "stderr": truncate_text(&stderr),
+                    "exitCode": exit_code,
+                    "sandbox": sandbox,
+                    "sessionId": resolved_session_id.as_deref(),
+                }),
+                binding.as_ref(),
+            )),
         ),
         Some(json!({
             "event": "codex_exec",
@@ -2188,7 +2272,7 @@ fn run_codex(
         "mode": if sandbox == "workspace-write" { "write" } else { "read" },
         "sandbox": sandbox,
         "exit_code": exit_code,
-        "session_id": resolved_session_id,
+        "session_id": resolved_session_id.as_deref(),
         "prompt": &prompt,
         "output_file": output_file.display().to_string(),
         "summary": &text,
@@ -2203,13 +2287,16 @@ fn run_codex(
         token: None,
         detail_json: conversation_detail_json(
             conversation_id,
-            Some(json!({
-                "kind": "codexResult",
-                "exitCode": exit_code,
-                "sandbox": sandbox,
-                "error": error,
-                "sessionId": resolved_session_id,
-            })),
+            Some(detail_with_binding(
+                json!({
+                    "kind": "codexResult",
+                    "exitCode": exit_code,
+                    "sandbox": sandbox,
+                    "error": error,
+                    "sessionId": resolved_session_id.as_deref(),
+                }),
+                binding.as_ref(),
+            )),
         ),
     })
 }
@@ -2503,6 +2590,100 @@ fn task_cancel_requested(request_id: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn latest_agent_session_binding(
+    conversation_id: &str,
+    project: Option<&str>,
+    agent: &str,
+) -> Option<AgentSessionBinding> {
+    let conversation_id = conversation_id.trim();
+    if conversation_id.is_empty() {
+        return None;
+    }
+    let project = project.map(str::trim).filter(|value| !value.is_empty());
+    let agent = agent.trim();
+    let file = OpenOptions::new()
+        .read(true)
+        .open(agent_session_bindings_file())
+        .ok()?;
+    let reader = BufReader::new(file);
+    let mut latest = None;
+    for line in reader.lines().map_while(std::result::Result::ok) {
+        let Ok(binding) = serde_json::from_str::<AgentSessionBinding>(line.trim()) else {
+            continue;
+        };
+        if binding.conversation_id != conversation_id {
+            continue;
+        }
+        if !agent.is_empty() && !binding.agent.eq_ignore_ascii_case(agent) {
+            continue;
+        }
+        if let Some(project) = project {
+            if binding.project != project {
+                continue;
+            }
+        }
+        if binding.agent_session_id.trim().is_empty() {
+            continue;
+        }
+        if latest
+            .as_ref()
+            .map(|item: &AgentSessionBinding| binding.updated_at >= item.updated_at)
+            .unwrap_or(true)
+        {
+            latest = Some(binding);
+        }
+    }
+    latest
+}
+
+fn append_agent_session_binding(
+    conversation_id: Option<&str>,
+    project: &str,
+    agent: &str,
+    agent_session_id: Option<&str>,
+) -> Option<AgentSessionBinding> {
+    let conversation_id = conversation_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let agent_session_id = agent_session_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let binding = AgentSessionBinding {
+        conversation_id: conversation_id.to_owned(),
+        project: project.trim().to_owned(),
+        agent: agent.trim().to_owned(),
+        agent_session_id: agent_session_id.to_owned(),
+        agent_ctx_seq: 0,
+        updated_at: unix_millis(),
+    };
+    if let Some(parent) = agent_session_bindings_file().parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(agent_session_bindings_file())
+    {
+        let _ = writeln!(
+            file,
+            "{}",
+            serde_json::to_string(&binding).unwrap_or_default()
+        );
+    }
+    Some(binding)
+}
+
+fn binding_detail_value(binding: &AgentSessionBinding) -> Value {
+    json!({
+        "conversationId": &binding.conversation_id,
+        "project": &binding.project,
+        "agent": &binding.agent,
+        "agentSessionId": &binding.agent_session_id,
+        "agentCtxSeq": binding.agent_ctx_seq,
+        "updatedAt": binding.updated_at,
+    })
+}
+
 fn looks_like_write_request(prompt: &str) -> bool {
     let current_request = prompt
         .rsplit_once("Current request:\n")
@@ -2584,7 +2765,13 @@ fn audit_file() -> PathBuf {
 }
 
 fn bridge_data_dir() -> PathBuf {
-    Config::path("agent-dashboard")
+    std::env::var_os(BRIDGE_DATA_DIR_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Config::path("agent-dashboard"))
+}
+
+fn agent_session_bindings_file() -> PathBuf {
+    bridge_data_dir().join("codex-bridge-bindings.jsonl")
 }
 
 fn session_index_file() -> PathBuf {
@@ -3559,14 +3746,14 @@ mod tests {
     #[test]
     fn select_windows_codex_command_path_prefers_non_windowsapps_cmd() {
         let where_output = concat!(
-            "C:\\Users\\xjf\\AppData\\Roaming\\npm\\codex\n",
-            "C:\\Users\\xjf\\AppData\\Roaming\\npm\\codex.cmd\n",
+            "C:\\Users\\example\\AppData\\Roaming\\npm\\codex\n",
+            "C:\\Users\\example\\AppData\\Roaming\\npm\\codex.cmd\n",
             "C:\\Program Files\\WindowsApps\\OpenAI.Codex\\codex\n",
             "C:\\Program Files\\WindowsApps\\OpenAI.Codex\\codex.exe\n",
         );
         assert_eq!(
             select_windows_codex_command_path(where_output),
-            Some("C:\\Users\\xjf\\AppData\\Roaming\\npm\\codex.cmd")
+            Some("C:\\Users\\example\\AppData\\Roaming\\npm\\codex.cmd")
         );
     }
 
@@ -3718,6 +3905,7 @@ mod tests {
             request_id: "req-continue".to_owned(),
             project: "rustdesk".to_owned(),
             prompt: "reply with exactly CONT_OK".to_owned(),
+            conversation_id: None,
             mode: Some("read-only".to_owned()),
             require_confirmation: Some(true),
             executor: None,
@@ -3734,6 +3922,116 @@ mod tests {
         assert!(!resolved.resume_last);
 
         let _ = fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn append_agent_session_binding_persists_latest_binding() {
+        let _guard = test_env_lock();
+        let _fixture = SessionFixture::new("agent-session-binding");
+
+        append_agent_session_binding(Some("conv-1"), "rustdesk", "codex", Some("session-first"))
+            .unwrap();
+        append_agent_session_binding(Some("conv-1"), "rustdesk", "codex", Some("session-second"))
+            .unwrap();
+
+        let latest = latest_agent_session_binding("conv-1", Some("rustdesk"), "codex").unwrap();
+
+        assert_eq!(latest.conversation_id, "conv-1");
+        assert_eq!(latest.project, "rustdesk");
+        assert_eq!(latest.agent, "codex");
+        assert_eq!(latest.agent_session_id, "session-second");
+        assert!(agent_session_bindings_file().is_file());
+    }
+
+    #[test]
+    fn apply_bound_session_for_continue_uses_latest_binding() {
+        let _guard = test_env_lock();
+        let fixture = SessionFixture::new("bound-session-continue");
+        let project_path = fixture.root.join("rustdesk");
+        fs::create_dir_all(&project_path).unwrap();
+        let _projects_guard = ConfigOptionGuard::replace(
+            PROJECTS,
+            json!([
+                {
+                    "id": "rustdesk",
+                    "path": project_path.display().to_string(),
+                    "resume_last": false
+                }
+            ])
+            .to_string(),
+        );
+        append_agent_session_binding(
+            Some("conv-continue"),
+            "rustdesk",
+            "codex",
+            Some("session-bound"),
+        )
+        .unwrap();
+        let mut req = AgentRunRequest {
+            request_id: "req-bound".to_owned(),
+            project: "rustdesk".to_owned(),
+            prompt: "continue".to_owned(),
+            conversation_id: Some("conv-continue".to_owned()),
+            mode: Some("read-only".to_owned()),
+            require_confirmation: Some(true),
+            executor: None,
+            profile: None,
+            session: None,
+            resume_last: Some(true),
+        };
+        let conversation_id = req.conversation_id.clone();
+
+        apply_bound_session_for_continue(&mut req, conversation_id.as_deref());
+        let resolved = resolve_target(&req).unwrap();
+
+        assert_eq!(req.session.as_deref(), Some("session-bound"));
+        assert_eq!(resolved.session.as_deref(), Some("session-bound"));
+        assert!(!resolved.resume_last);
+    }
+
+    #[test]
+    fn conversation_detail_json_includes_binding_metadata() {
+        let binding = AgentSessionBinding {
+            conversation_id: "conv-detail".to_owned(),
+            project: "rustdesk".to_owned(),
+            agent: "codex".to_owned(),
+            agent_session_id: "session-detail".to_owned(),
+            agent_ctx_seq: 3,
+            updated_at: 42,
+        };
+
+        let raw = conversation_detail_json(
+            Some("conv-detail"),
+            Some(detail_with_binding(
+                json!({
+                    "kind": "codexResult",
+                    "sessionId": "session-detail",
+                }),
+                Some(&binding),
+            )),
+        )
+        .unwrap();
+        let value = parse_detail_json_value(&raw).unwrap();
+
+        assert_eq!(
+            value.get("conversationId").and_then(Value::as_str),
+            Some("conv-detail")
+        );
+        assert_eq!(
+            value.get("sessionId").and_then(Value::as_str),
+            Some("session-detail")
+        );
+        assert_eq!(
+            value.get("agentSessionId").and_then(Value::as_str),
+            Some("session-detail")
+        );
+        assert_eq!(
+            value
+                .get("binding")
+                .and_then(|binding| binding.get("agentSessionId"))
+                .and_then(Value::as_str),
+            Some("session-detail")
+        );
     }
 
     #[test]
@@ -3774,6 +4072,7 @@ mod tests {
             request_id: "req-session-project".to_owned(),
             project: "BlueprintHarness".to_owned(),
             prompt: "reply with exactly CONT_OK".to_owned(),
+            conversation_id: None,
             mode: Some("read-only".to_owned()),
             require_confirmation: Some(true),
             executor: None,
@@ -3879,12 +4178,27 @@ mod tests {
         clear_codex_session_index_cache();
         SESSION_FILE_CACHE.lock().unwrap().clear();
         SESSION_LINE_INDEX_CACHE.lock().unwrap().clear();
+        let project_path = fixture.root.join("rustdesk");
+        fs::create_dir_all(&project_path).unwrap();
 
         fixture.write_session_file(
             "2026/10/rollout-2026-06-07T20-16-38-session-orphan.jsonl",
-            concat!(
-                "{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"E:\\\\rustDesk\"}}\n",
-                "{\"type\":\"response_item\",\"timestamp\":\"1\",\"payload\":{\"role\":\"assistant\",\"text\":\"orphan reply\"}}\n"
+            &format!(
+                "{}\n{}",
+                json!({
+                    "type": "session_meta",
+                    "payload": {
+                        "cwd": project_path.display().to_string(),
+                    },
+                }),
+                json!({
+                    "type": "response_item",
+                    "timestamp": "1",
+                    "payload": {
+                        "role": "assistant",
+                        "text": "orphan reply",
+                    },
+                })
             ),
         );
 
@@ -4208,6 +4522,7 @@ mod tests {
     struct SessionFixture {
         root: PathBuf,
         previous_codex_home: Option<std::ffi::OsString>,
+        previous_bridge_data_dir: Option<std::ffi::OsString>,
     }
 
     impl SessionFixture {
@@ -4222,10 +4537,13 @@ mod tests {
             }
             fs::create_dir_all(root.join("sessions")).unwrap();
             let previous_codex_home = std::env::var_os("CODEX_HOME");
+            let previous_bridge_data_dir = std::env::var_os(BRIDGE_DATA_DIR_ENV);
             std::env::set_var("CODEX_HOME", &root);
+            std::env::set_var(BRIDGE_DATA_DIR_ENV, root.join("agent-dashboard"));
             Self {
                 root,
                 previous_codex_home,
+                previous_bridge_data_dir,
             }
         }
 
@@ -4262,6 +4580,11 @@ mod tests {
                 std::env::set_var("CODEX_HOME", previous);
             } else {
                 std::env::remove_var("CODEX_HOME");
+            }
+            if let Some(previous) = self.previous_bridge_data_dir.take() {
+                std::env::set_var(BRIDGE_DATA_DIR_ENV, previous);
+            } else {
+                std::env::remove_var(BRIDGE_DATA_DIR_ENV);
             }
             let _ = fs::remove_dir_all(&self.root);
         }
