@@ -692,6 +692,7 @@ class _WorkspaceTopBar extends StatelessWidget {
     final conversation = model.selectedConversation!;
     final status = model.statusForConversationObject(conversation);
     final statusLabel = model.statusLabelForConversationObject(conversation);
+    final bridgeDiagnostics = model.bridgeDiagnostics;
     final compact = MediaQuery.of(context).size.width < 520;
     return _GlassPanel(
       padding:
@@ -751,6 +752,17 @@ class _WorkspaceTopBar extends StatelessWidget {
                 color: const Color(0xFF22C55E),
                 dense: compact,
               ),
+              if (model.supportsBridgeDiagnostics)
+                _StatusBadge(
+                  label: bridgeDiagnostics?.badgeLabel ??
+                      (model.bridgeDiagnosticsLoading
+                          ? 'bridge:checking'
+                          : 'bridge:unknown'),
+                  color: bridgeDiagnostics == null
+                      ? _AgentDashboardColors.running
+                      : _bridgeHealthColor(bridgeDiagnostics.state),
+                  dense: compact,
+                ),
             ],
           ),
         ],
@@ -2187,6 +2199,10 @@ class _SessionsPanelState extends State<_SessionsPanel> {
     }
   }
 
+  Future<void> _refreshBridgeDiagnostics() async {
+    await widget.model.refreshBridgeDiagnostics();
+  }
+
   Future<void> _restoreSession(String sessionId) async {
     if (sessionId.trim().isEmpty || _restoringSessionId != null) {
       return;
@@ -2247,6 +2263,17 @@ class _SessionsPanelState extends State<_SessionsPanel> {
           icon: Icons.history_outlined,
         ),
         const SizedBox(height: 12),
+        if (model.supportsBridgeDiagnostics) ...[
+          _BridgeStatusCard(
+            diagnostics: model.bridgeDiagnostics,
+            loading: model.bridgeDiagnosticsLoading,
+            lastSessionCatalogError: model.lastSessionCatalogError,
+            onRefresh: model.bridgeDiagnosticsLoading
+                ? null
+                : _refreshBridgeDiagnostics,
+          ),
+          const SizedBox(height: 12),
+        ],
         if (!model.sessionsLoaded)
           _DashboardEmptyState(
             icon: Icons.cloud_off_outlined,
@@ -3231,6 +3258,256 @@ class _SectionBlock extends StatelessWidget {
   }
 }
 
+class _BridgeStatusCard extends StatelessWidget {
+  const _BridgeStatusCard({
+    required this.diagnostics,
+    required this.loading,
+    required this.lastSessionCatalogError,
+    required this.onRefresh,
+  });
+
+  final AgentBridgeDiagnostics? diagnostics;
+  final bool loading;
+  final String? lastSessionCatalogError;
+  final VoidCallback? onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    final status = diagnostics?.state ?? AgentBridgeHealthState.checking;
+    final tone = _bridgeHealthColor(status);
+    final summary = diagnostics?.summary ??
+        (loading
+            ? 'Checking local bridge status'
+            : 'Bridge status unavailable');
+    final detail = diagnostics?.detail ??
+        'The dashboard will probe the local bridge service on the controlled desktop.';
+    final rawProbeError =
+        diagnostics?.errors.isNotEmpty == true ? diagnostics!.errors.first : '';
+    final checkedAt = diagnostics?.checkedAt;
+    final actionLabel = loading
+        ? 'Checking'
+        : (status == AgentBridgeHealthState.unreachable &&
+                (diagnostics?.enabled ?? false)
+            ? 'Start bridge'
+            : 'Refresh');
+    final meta = <String>[
+      if (diagnostics != null) 'Port ${diagnostics!.port}',
+      if ((diagnostics?.command ?? '').isNotEmpty)
+        'Command ${diagnostics!.command}',
+      if (diagnostics != null) 'Projects ${diagnostics!.projectCount}',
+      if (diagnostics != null)
+        diagnostics!.requireConfirmation ? 'Confirm on' : 'Confirm off',
+      if (checkedAt != null) 'Checked ${_formatTimeOfDay(checkedAt)}',
+    ];
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 520;
+        final detailStyle = Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: _AgentDashboardColors.secondaryText,
+              height: 1.35,
+            );
+        final titleBlock = Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Local bridge service',
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    color: _AgentDashboardColors.text,
+                    fontWeight: FontWeight.w700,
+                  ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              summary,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: _AgentDashboardColors.text,
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+            const SizedBox(height: 4),
+            _BridgeStatusTextBlock(
+              text: detail,
+              style: detailStyle,
+              maxHeight: compact ? 96 : 72,
+            ),
+          ],
+        );
+        final refreshButton = compact
+            ? SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: onRefresh,
+                  icon: loading
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.refresh, size: 16),
+                  label: Text(actionLabel),
+                ),
+              )
+            : OutlinedButton.icon(
+                onPressed: onRefresh,
+                icon: loading
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.refresh, size: 16),
+                label: Text(actionLabel),
+              );
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: _AgentDashboardColors.elevatedSurface.withOpacity(0.56),
+            borderRadius: BorderRadius.circular(
+              _AgentDashboardMetrics.controlRadius,
+            ),
+            border: Border.all(color: tone.withOpacity(0.28)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (compact)
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          width: 36,
+                          height: 36,
+                          decoration: BoxDecoration(
+                            color: tone.withOpacity(0.16),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: loading
+                              ? Padding(
+                                  padding: const EdgeInsets.all(9),
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: tone,
+                                  ),
+                                )
+                              : Icon(
+                                  _bridgeHealthIcon(status),
+                                  size: 18,
+                                  color: tone,
+                                ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(child: titleBlock),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    refreshButton,
+                  ],
+                )
+              else
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: tone.withOpacity(0.16),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: loading
+                          ? Padding(
+                              padding: const EdgeInsets.all(9),
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: tone,
+                              ),
+                            )
+                          : Icon(
+                              _bridgeHealthIcon(status),
+                              size: 18,
+                              color: tone,
+                            ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(child: titleBlock),
+                    const SizedBox(width: 8),
+                    refreshButton,
+                  ],
+                ),
+              if (meta.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: meta
+                      .map(
+                        (item) => _StatusBadge(
+                          label: item,
+                          color: tone,
+                          dense: true,
+                        ),
+                      )
+                      .toList(),
+                ),
+              ],
+              if (rawProbeError.isNotEmpty && rawProbeError != detail) ...[
+                const SizedBox(height: 12),
+                _SectionBlock(
+                  title: 'Probe error',
+                  child: _BridgeStatusTextBlock(
+                    text: rawProbeError,
+                    style: detailStyle,
+                    maxHeight: 84,
+                  ),
+                ),
+              ],
+              if ((lastSessionCatalogError ?? '').trim().isNotEmpty &&
+                  (lastSessionCatalogError ?? '').trim() != rawProbeError &&
+                  (lastSessionCatalogError ?? '').trim() != detail) ...[
+                const SizedBox(height: 12),
+                _SectionBlock(
+                  title: 'Last session catalog error',
+                  child: _BridgeStatusTextBlock(
+                    text: lastSessionCatalogError!,
+                    style: detailStyle,
+                    maxHeight: 96,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _BridgeStatusTextBlock extends StatelessWidget {
+  const _BridgeStatusTextBlock({
+    required this.text,
+    required this.style,
+    required this.maxHeight,
+  });
+
+  final String text;
+  final TextStyle? style;
+  final double maxHeight;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: maxHeight),
+      child: SingleChildScrollView(
+        child: Text(text, style: style),
+      ),
+    );
+  }
+}
+
 class _ContextPreview extends StatelessWidget {
   const _ContextPreview({required this.text});
 
@@ -3743,6 +4020,44 @@ String _shortSessionId(String sessionId) {
   if (normalized.isEmpty) return '';
   if (normalized.length <= 18) return normalized;
   return '${normalized.substring(0, 8)}...${normalized.substring(normalized.length - 6)}';
+}
+
+String _formatTimeOfDay(DateTime time) {
+  final local = time.toLocal();
+  final hour = local.hour.toString().padLeft(2, '0');
+  final minute = local.minute.toString().padLeft(2, '0');
+  final second = local.second.toString().padLeft(2, '0');
+  return '$hour:$minute:$second';
+}
+
+Color _bridgeHealthColor(AgentBridgeHealthState state) {
+  switch (state) {
+    case AgentBridgeHealthState.healthy:
+      return _AgentDashboardColors.ready;
+    case AgentBridgeHealthState.checking:
+      return _AgentDashboardColors.running;
+    case AgentBridgeHealthState.disabled:
+      return _AgentDashboardColors.warning;
+    case AgentBridgeHealthState.misconfigured:
+      return _AgentDashboardColors.error;
+    case AgentBridgeHealthState.unreachable:
+      return _AgentDashboardColors.error;
+  }
+}
+
+IconData _bridgeHealthIcon(AgentBridgeHealthState state) {
+  switch (state) {
+    case AgentBridgeHealthState.healthy:
+      return Icons.cloud_done_outlined;
+    case AgentBridgeHealthState.checking:
+      return Icons.sync;
+    case AgentBridgeHealthState.disabled:
+      return Icons.toggle_off_outlined;
+    case AgentBridgeHealthState.misconfigured:
+      return Icons.warning_amber_outlined;
+    case AgentBridgeHealthState.unreachable:
+      return Icons.cloud_off_outlined;
+  }
 }
 
 class _StatusBadge extends StatelessWidget {

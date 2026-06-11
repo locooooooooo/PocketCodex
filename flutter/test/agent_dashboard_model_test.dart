@@ -109,6 +109,17 @@ class _TrackingRuntime implements AgentDashboardRuntime {
   bool get defersSkillCatalogLoad => false;
 
   @override
+  bool get supportsBridgeDiagnostics => false;
+
+  @override
+  Future<AgentBridgeDiagnostics?> loadBridgeDiagnostics({
+    bool attemptStart = false,
+  }) async {
+    final _ = attemptStart;
+    return null;
+  }
+
+  @override
   bool hasActiveStatusTracking(String requestId) => hasActiveTracking;
 
   @override
@@ -310,7 +321,7 @@ class _ProjectSessionRuntime extends _TrackingRuntime {
         'id': 'session-blueprint-1',
         'title': 'Blueprint Session',
         'projectId': 'BlueprintHarness',
-        'projectPath': r'E:\BlueprintHarness',
+        'projectPath': r'C:\work\BlueprintHarness',
         'updatedAt': DateTime.now().toIso8601String(),
       },
     ];
@@ -366,7 +377,7 @@ class _SessionPathOnlyProjectRuntime extends _TrackingRuntime {
       {
         'id': 'session-blueprint-path-1',
         'title': 'Blueprint Path Session',
-        'cwd': r'E:\BlueprintHarness',
+        'cwd': r'C:\work\BlueprintHarness',
         'updatedAt': DateTime.now().toIso8601String(),
       },
     ];
@@ -384,7 +395,7 @@ class _SessionPathOnlyProjectRuntime extends _TrackingRuntime {
       'id': sessionId,
       'title': 'Restored BlueprintHarness',
       'payload': {
-        'cwd': r'E:\BlueprintHarness',
+        'cwd': r'C:\work\BlueprintHarness',
       },
       'updatedAt': DateTime.now().toIso8601String(),
       'messages': [
@@ -433,7 +444,7 @@ class _SessionDetailPathOnlyRuntime extends _TrackingRuntime {
       'id': sessionId,
       'title': 'Detail-only BlueprintHarness',
       'payload': {
-        'project_path': r'E:\BlueprintHarness',
+        'project_path': r'C:\work\BlueprintHarness',
       },
       'updatedAt': DateTime.now().toIso8601String(),
       'messages': [
@@ -465,7 +476,7 @@ class _ConflictingSessionSummaryProjectRuntime extends _TrackingRuntime {
         'id': 'session-blueprint-conflict-1',
         'title': 'Blueprint Conflict Session',
         'projectId': 'rustdesk',
-        'projectPath': r'E:\BlueprintHarness',
+        'projectPath': r'C:\work\BlueprintHarness',
         'updatedAt': DateTime.now().toIso8601String(),
       },
     ];
@@ -677,6 +688,47 @@ class _AutoAttachLatestSessionRuntime extends _TrackingRuntime {
       'rawEvents': const [],
       'nextCursor': null,
     };
+  }
+}
+
+class _BridgeDiagnosticsRuntime extends _TrackingRuntime {
+  _BridgeDiagnosticsRuntime() : super(hasActiveTracking: false);
+
+  int loadBridgeDiagnosticsCalls = 0;
+  bool failSessions = false;
+  String sessionFailure = 'Bridge session catalog failed.';
+  AgentBridgeDiagnostics currentDiagnostics = AgentBridgeDiagnostics(
+    state: AgentBridgeHealthState.healthy,
+    port: 17321,
+    checkedAt: DateTime.now(),
+    summary: 'Bridge service is listening on 17321',
+    detail: 'Command: codex | Projects: 1 | Confirmation: off',
+    enabled: true,
+    command: 'codex',
+    projectCount: 1,
+    requireConfirmation: false,
+  );
+
+  @override
+  bool get supportsBridgeDiagnostics => true;
+
+  @override
+  Future<AgentBridgeDiagnostics?> loadBridgeDiagnostics({
+    bool attemptStart = false,
+  }) async {
+    final _ = attemptStart;
+    loadBridgeDiagnosticsCalls += 1;
+    return currentDiagnostics;
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> loadSessions({
+    String? conversationId,
+  }) async {
+    if (failSessions) {
+      throw Exception(sessionFailure);
+    }
+    return const [];
   }
 }
 
@@ -2948,6 +3000,74 @@ void main() {
       expect(storage.writeCount, 1);
       expect(model.selectedConversation!.sessionRef, 'session-latest-auto-1');
       expect(model.selectedConversation!.messages, isNotEmpty);
+    });
+
+    test('refreshBridgeDiagnostics updates visible bridge service status',
+        () async {
+      final runtime = _BridgeDiagnosticsRuntime();
+      final model = AgentDashboardModel.fromRuntime(
+        runtime,
+        storage: _MemoryAgentDashboardStorage(),
+      );
+      await model.ensureLoaded();
+
+      expect(model.supportsBridgeDiagnostics, isTrue);
+      expect(runtime.loadBridgeDiagnosticsCalls, 1);
+      expect(model.bridgeDiagnostics?.state, AgentBridgeHealthState.healthy);
+      expect(model.bridgeDiagnostics?.port, 17321);
+
+      runtime.currentDiagnostics = AgentBridgeDiagnostics(
+        state: AgentBridgeHealthState.unreachable,
+        port: 17321,
+        checkedAt: DateTime.now(),
+        summary: 'Bridge service is not reachable',
+        detail: 'Socket connect timed out',
+        errors: const <String>['Socket connect timed out'],
+      );
+
+      await model.refreshBridgeDiagnostics();
+
+      expect(runtime.loadBridgeDiagnosticsCalls, 2);
+      expect(
+          model.bridgeDiagnostics?.state, AgentBridgeHealthState.unreachable);
+      expect(
+        model.bridgeDiagnostics?.summary,
+        'Bridge service is not reachable',
+      );
+      expect(model.bridgeDiagnostics?.detail, 'Socket connect timed out');
+    });
+
+    test(
+        'reloadSessionCatalog preserves session catalog error alongside bridge diagnostics',
+        () async {
+      final runtime = _BridgeDiagnosticsRuntime();
+      final model = AgentDashboardModel.fromRuntime(
+        runtime,
+        storage: _MemoryAgentDashboardStorage(),
+      );
+      await model.ensureLoaded();
+
+      expect(model.lastSessionCatalogError, isNull);
+      expect(model.bridgeDiagnostics?.state, AgentBridgeHealthState.healthy);
+
+      runtime.failSessions = true;
+      runtime.currentDiagnostics = AgentBridgeDiagnostics(
+        state: AgentBridgeHealthState.unreachable,
+        port: 17321,
+        checkedAt: DateTime.now(),
+        summary: 'Bridge service is not reachable',
+        detail: 'Connection refused',
+        errors: const <String>['Connection refused'],
+      );
+
+      await model.reloadSessionCatalog();
+
+      expect(runtime.loadBridgeDiagnosticsCalls, greaterThanOrEqualTo(2));
+      expect(model.sessionsLoaded, isFalse);
+      expect(model.lastSessionCatalogError, contains(runtime.sessionFailure));
+      expect(
+          model.bridgeDiagnostics?.state, AgentBridgeHealthState.unreachable);
+      expect(model.bridgeDiagnostics?.detail, 'Connection refused');
     });
 
     test(

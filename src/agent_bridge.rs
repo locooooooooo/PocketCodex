@@ -178,6 +178,12 @@ pub struct BridgeConfigStatus {
     pub require_confirmation: bool,
     pub projects: Vec<ProjectStatus>,
     pub errors: Vec<String>,
+    #[serde(default)]
+    pub healthy: bool,
+    #[serde(default)]
+    pub health_error: String,
+    #[serde(default)]
+    pub last_start_error: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1012,7 +1018,37 @@ fn config_status() -> BridgeConfigStatus {
         require_confirmation: requires_confirmation(),
         projects,
         errors,
+        healthy: false,
+        health_error: String::new(),
+        last_start_error: String::new(),
     }
+}
+
+pub fn config_status_with_probe(attempt_start: bool) -> BridgeConfigStatus {
+    let mut status = config_status();
+    match health_check() {
+        Ok(()) => {
+            status.healthy = true;
+            return status;
+        }
+        Err(err) => {
+            status.health_error = err.to_string();
+        }
+    }
+
+    if attempt_start && status.enabled {
+        match ensure_started() {
+            Ok(()) => {
+                status.healthy = true;
+                status.health_error.clear();
+            }
+            Err(err) => {
+                status.last_start_error = err.to_string();
+            }
+        }
+    }
+
+    status
 }
 
 fn parse_http_request(request: &str) -> Result<(String, String, String)> {

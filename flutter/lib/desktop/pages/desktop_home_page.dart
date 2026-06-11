@@ -13,6 +13,7 @@ import 'package:flutter_hbb/desktop/pages/connection_page.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
 import 'package:flutter_hbb/desktop/widgets/update_progress.dart';
+import 'package:flutter_hbb/models/agent_dashboard_model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/server_model.dart';
 import 'package:flutter_hbb/models/state_model.dart';
@@ -38,6 +39,7 @@ const borderColor = Color(0xFF2F65BA);
 class _DesktopHomePageState extends State<DesktopHomePage>
     with AutomaticKeepAliveClientMixin, WidgetsBindingObserver {
   final _leftPaneScrollController = ScrollController();
+  late final AgentDashboardModel _desktopAgentDashboardModel;
 
   @override
   bool get wantKeepAlive => true;
@@ -96,6 +98,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       buildTip(context),
       if (!isOutgoingOnly) buildIDBoard(context),
       if (!isOutgoingOnly) buildPasswordBoard(context),
+      if (!isOutgoingOnly) buildBridgeStatusCard(context),
       FutureBuilder<Widget>(
         future: Future.value(
             Obx(() => buildHelpCards(stateGlobal.updateUrl.value))),
@@ -140,14 +143,15 @@ class _DesktopHomePageState extends State<DesktopHomePage>
           children: [
             Column(
               children: [
-                SingleChildScrollView(
-                  controller: _leftPaneScrollController,
-                  child: Column(
-                    key: _childKey,
-                    children: children,
+                Expanded(
+                  child: SingleChildScrollView(
+                    controller: _leftPaneScrollController,
+                    child: Column(
+                      key: _childKey,
+                      children: children,
+                    ),
                   ),
                 ),
-                Expanded(child: Container())
               ],
             ),
             if (isOutgoingOnly)
@@ -571,6 +575,196 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     return Container();
   }
 
+  Widget buildBridgeStatusCard(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _desktopAgentDashboardModel,
+      builder: (context, child) {
+        if (!_desktopAgentDashboardModel.supportsBridgeDiagnostics) {
+          return const SizedBox.shrink();
+        }
+
+        final diagnostics = _desktopAgentDashboardModel.bridgeDiagnostics;
+        final loading = _desktopAgentDashboardModel.bridgeDiagnosticsLoading;
+        final status = diagnostics?.state ?? AgentBridgeHealthState.checking;
+        final statusColor = _desktopBridgeStatusColor(status);
+        final summary = diagnostics?.summary ??
+            (loading
+                ? 'Checking local bridge status...'
+                : 'Bridge status unavailable');
+        final detail = diagnostics?.detail ??
+            'The local Codex bridge probe will appear here.';
+        final rawProbeError = diagnostics?.errors.isNotEmpty == true
+            ? diagnostics!.errors.first
+            : '';
+        final sessionCatalogError =
+            _desktopAgentDashboardModel.lastSessionCatalogError?.trim() ?? '';
+        final checkedAt = diagnostics?.checkedAt;
+        final actionText = loading
+            ? 'Checking'
+            : (status == AgentBridgeHealthState.unreachable &&
+                    (diagnostics?.enabled ?? false)
+                ? 'Start bridge'
+                : 'Refresh bridge');
+
+        final badges = <String>[
+          diagnostics?.badgeLabel ?? (loading ? 'bridge:checking' : 'bridge'),
+          if (diagnostics != null) 'port:${diagnostics.port}',
+          if (checkedAt != null)
+            'checked:${checkedAt.toLocal().hour.toString().padLeft(2, '0')}:${checkedAt.toLocal().minute.toString().padLeft(2, '0')}:${checkedAt.toLocal().second.toString().padLeft(2, '0')}',
+        ];
+
+        return Container(
+          margin:
+              EdgeInsets.fromLTRB(0, 20.0, 0, bind.isIncomingOnly() ? 20.0 : 0),
+          decoration: BoxDecoration(
+            color: MyTheme.color(context).panelBackground,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: statusColor.withOpacity(0.28)),
+          ),
+          padding: const EdgeInsets.all(16),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final compact = constraints.maxWidth < 240;
+              final detailStyle = TextStyle(
+                height: 1.45,
+                color: MyTheme.color(context).weakText,
+                fontWeight: FontWeight.normal,
+                fontSize: 12,
+              );
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        _desktopBridgeStatusIcon(status),
+                        color: statusColor,
+                        size: 18,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Local bridge service',
+                          style: TextStyle(
+                            color:
+                                Theme.of(context).textTheme.titleLarge?.color,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 15,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    summary,
+                    style: TextStyle(
+                      color: Theme.of(context).textTheme.titleMedium?.color,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  _DesktopBridgeStatusTextBlock(
+                    text: detail,
+                    style: detailStyle,
+                    maxHeight: compact ? 96 : 72,
+                  ),
+                  if (rawProbeError.isNotEmpty && rawProbeError != detail) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      'Probe error',
+                      style: TextStyle(
+                        color: Theme.of(context).textTheme.titleSmall?.color,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    _DesktopBridgeStatusTextBlock(
+                      text: rawProbeError,
+                      style: detailStyle,
+                      maxHeight: 84,
+                    ),
+                  ],
+                  if (sessionCatalogError.isNotEmpty &&
+                      sessionCatalogError != rawProbeError &&
+                      sessionCatalogError != detail) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      'Last session error',
+                      style: TextStyle(
+                        color: Colors.redAccent.shade100,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    _DesktopBridgeStatusTextBlock(
+                      text: sessionCatalogError,
+                      style: TextStyle(
+                        height: 1.45,
+                        color: Colors.redAccent.shade100,
+                        fontSize: 12,
+                      ),
+                      maxHeight: 96,
+                    ),
+                  ],
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: badges
+                        .map(
+                          (item) => Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: statusColor.withOpacity(0.10),
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(
+                                  color: statusColor.withOpacity(0.18)),
+                            ),
+                            child: Text(
+                              item,
+                              style: TextStyle(
+                                color: statusColor,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        )
+                        .toList(),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FixedWidthButton(
+                      width: double.infinity,
+                      padding: 8,
+                      isOutline: true,
+                      text: actionText,
+                      textColor: Theme.of(context).textTheme.titleLarge?.color,
+                      borderColor: MyTheme.color(context).secondaryButtonBorder,
+                      textSize: 14,
+                      radius: 14,
+                      onTap: () {
+                        unawaited(_desktopAgentDashboardModel
+                            .refreshBridgeDiagnostics());
+                      },
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
   Widget buildInstallCard(String title, String content, String btnText,
       GestureTapCallback onPressed,
       {double marginTop = 20.0,
@@ -700,6 +894,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   @override
   void initState() {
     super.initState();
+    _desktopAgentDashboardModel = gFFI.chatModel.agentDashboardModel;
+    unawaited(_desktopAgentDashboardModel.ensureLoaded());
     _updateTimer = periodic_immediate(const Duration(seconds: 1), () async {
       await gFFI.serverModel.fetchID();
       final error = await bind.mainGetError();
@@ -905,6 +1101,58 @@ class _DesktopHomePageState extends State<DesktopHomePage>
             return entry.value;
           })
         ],
+      ),
+    );
+  }
+}
+
+Color _desktopBridgeStatusColor(AgentBridgeHealthState state) {
+  switch (state) {
+    case AgentBridgeHealthState.healthy:
+      return Colors.green;
+    case AgentBridgeHealthState.checking:
+      return Colors.lightBlue;
+    case AgentBridgeHealthState.disabled:
+      return Colors.orange;
+    case AgentBridgeHealthState.misconfigured:
+      return Colors.deepOrange;
+    case AgentBridgeHealthState.unreachable:
+      return Colors.redAccent;
+  }
+}
+
+IconData _desktopBridgeStatusIcon(AgentBridgeHealthState state) {
+  switch (state) {
+    case AgentBridgeHealthState.healthy:
+      return Icons.cloud_done_outlined;
+    case AgentBridgeHealthState.checking:
+      return Icons.sync;
+    case AgentBridgeHealthState.disabled:
+      return Icons.toggle_off_outlined;
+    case AgentBridgeHealthState.misconfigured:
+      return Icons.warning_amber_outlined;
+    case AgentBridgeHealthState.unreachable:
+      return Icons.cloud_off_outlined;
+  }
+}
+
+class _DesktopBridgeStatusTextBlock extends StatelessWidget {
+  const _DesktopBridgeStatusTextBlock({
+    required this.text,
+    required this.style,
+    required this.maxHeight,
+  });
+
+  final String text;
+  final TextStyle style;
+  final double maxHeight;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: maxHeight),
+      child: SingleChildScrollView(
+        child: Text(text, style: style),
       ),
     );
   }

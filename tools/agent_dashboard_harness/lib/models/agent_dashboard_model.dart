@@ -182,6 +182,96 @@ class AgentTaskStatusBubble {
   bool get isExpired => expiresAt != null && DateTime.now().isAfter(expiresAt!);
 }
 
+enum AgentBridgeHealthState {
+  checking,
+  healthy,
+  unreachable,
+  disabled,
+  misconfigured,
+}
+
+class AgentBridgeDiagnostics {
+  const AgentBridgeDiagnostics({
+    required this.state,
+    required this.port,
+    required this.checkedAt,
+    required this.summary,
+    required this.detail,
+    this.enabled = false,
+    this.command = '',
+    this.projectCount = 0,
+    this.requireConfirmation = false,
+    this.errors = const <String>[],
+  });
+
+  final AgentBridgeHealthState state;
+  final int port;
+  final DateTime checkedAt;
+  final String summary;
+  final String detail;
+  final bool enabled;
+  final String command;
+  final int projectCount;
+  final bool requireConfirmation;
+  final List<String> errors;
+
+  String get badgeLabel {
+    switch (state) {
+      case AgentBridgeHealthState.checking:
+        return 'bridge:checking';
+      case AgentBridgeHealthState.healthy:
+        return 'bridge:$port up';
+      case AgentBridgeHealthState.unreachable:
+        return 'bridge:$port down';
+      case AgentBridgeHealthState.disabled:
+        return 'bridge:disabled';
+      case AgentBridgeHealthState.misconfigured:
+        return 'bridge:config';
+    }
+  }
+}
+
+AgentBridgeDiagnostics buildBridgeUnreachableDiagnostics({
+  required Object error,
+  required int port,
+}) {
+  final raw = error.toString().trim();
+  final normalized = raw.toLowerCase();
+
+  String summary = 'Bridge service is not reachable';
+  String detail =
+      'The app could not reach the local bridge endpoint on port $port.';
+
+  if (normalized.contains('connection refused') ||
+      normalized.contains('actively refused') ||
+      raw.contains('拒绝网络连接') ||
+      raw.contains('目标计算机积极拒绝') ||
+      raw.contains('errno = 1225')) {
+    summary = 'Bridge port $port is not accepting connections';
+    detail =
+        'The UI tried to connect to 127.0.0.1:$port, but no local Codex bridge service is listening on that port.';
+  } else if (normalized.contains('timed out') || raw.contains('超时')) {
+    summary = 'Bridge probe to port $port timed out';
+    detail =
+        'The local bridge did not answer in time. Check whether the process is stuck or blocked before retrying.';
+  } else if (normalized.contains('failed: 404') ||
+      normalized.contains('failed: 500') ||
+      normalized.contains('statuscode')) {
+    summary = 'Bridge endpoint responded with an error';
+    detail =
+        'The local service answered, but the /agent/config probe failed. Check the bridge route and local service logs.';
+  }
+
+  return AgentBridgeDiagnostics(
+    state: AgentBridgeHealthState.unreachable,
+    port: port,
+    checkedAt: DateTime.now(),
+    summary: summary,
+    detail: detail,
+    errors: <String>[raw],
+  );
+}
+
 abstract class AgentDashboardRuntime {
   String get peerId;
 
@@ -224,6 +314,14 @@ abstract class AgentDashboardRuntime {
     required String requestId,
     required String projectId,
   });
+
+  bool get supportsBridgeDiagnostics => false;
+
+  Future<AgentBridgeDiagnostics?> loadBridgeDiagnostics({
+    bool attemptStart = false,
+  }) async {
+    return null;
+  }
 
   bool get defersSkillCatalogLoad => false;
 
@@ -277,9 +375,9 @@ class MockAgentDashboardRuntime implements AgentDashboardRuntime {
     String? terminalContext,
   })  : _projects = projects ?? const ['rustdesk', 'minister', 'workflow'],
         _terminalContext = terminalContext ??
-            'PS E:\\rustDesk> cargo build -p rustdesk-flutter\n'
+            'PS C:\\work\\rustdesk> cargo build -p rustdesk-flutter\n'
                 'Finished dev [unoptimized + debuginfo] target(s) in 3.8s\n\n'
-                'PS E:\\rustDesk> codex exec --cd E:\\rustDesk --sandbox read-only "analyze Android entry"\n'
+                'PS C:\\work\\rustdesk> codex exec --cd C:\\work\\rustdesk --sandbox read-only "analyze Android entry"\n'
                 'Summary: mobile startup path resolved through flutter/lib/main.dart -> App.build().';
 
   @override
@@ -296,6 +394,28 @@ class MockAgentDashboardRuntime implements AgentDashboardRuntime {
 
   @override
   bool get defersSkillCatalogLoad => false;
+
+  @override
+  bool get supportsBridgeDiagnostics => true;
+
+  @override
+  Future<AgentBridgeDiagnostics?> loadBridgeDiagnostics({
+    bool attemptStart = false,
+  }) async {
+    final _ = attemptStart;
+    return AgentBridgeDiagnostics(
+      state: AgentBridgeHealthState.healthy,
+      port: 17321,
+      checkedAt: DateTime.now(),
+      summary: 'Mock bridge is listening on 17321',
+      detail:
+          'Command: codex | Projects: ${_projects.length} | Confirmation: off',
+      enabled: true,
+      command: 'codex',
+      projectCount: _projects.length,
+      requireConfirmation: false,
+    );
+  }
 
   @override
   Future<void> dispatchCommand({
@@ -573,6 +693,7 @@ class AgentDashboardModel with ChangeNotifier {
   AgentConversationListFilter _listFilter = AgentConversationListFilter.active;
   String? _activeRequestConversationId;
   Timer? _draftSaveTimer;
+  Timer? _bridgeDiagnosticsTimer;
   final Map<String, AgentConversationStatus> _runtimeStatuses = {};
   final Map<String, String> _runtimeStatusDetails = {};
   final Map<String, List<Map<String, dynamic>>> _timelineByConversation = {};
@@ -588,11 +709,14 @@ class AgentDashboardModel with ChangeNotifier {
   Timer? _taskStatusBubbleTimer;
   Timer? _sessionCatalogRetryTimer;
   int _sessionCatalogRetryCount = 0;
+  AgentBridgeDiagnostics? _bridgeDiagnostics;
   List<Map<String, dynamic>> _sessionSummaries = [];
   List<Map<String, dynamic>> _skillCatalog = [];
   bool _skillsLoaded = false;
   bool _skillsLoading = false;
   bool _sessionsLoaded = false;
+  bool _bridgeDiagnosticsLoading = false;
+  String? _lastSessionCatalogError;
 
   List<AgentConversation> get conversations => _conversations;
 
@@ -654,6 +778,10 @@ class AgentDashboardModel with ChangeNotifier {
   bool get sessionsLoaded => _sessionsLoaded;
   bool get skillsLoaded => _skillsLoaded;
   bool get skillsLoading => _skillsLoading;
+  bool get supportsBridgeDiagnostics => runtime.supportsBridgeDiagnostics;
+  bool get bridgeDiagnosticsLoading => _bridgeDiagnosticsLoading;
+  AgentBridgeDiagnostics? get bridgeDiagnostics => _bridgeDiagnostics;
+  String? get lastSessionCatalogError => _lastSessionCatalogError;
   bool get isVoiceRecording => _voiceRecording;
   String get searchQuery => _searchQuery;
   String? get projectFilter => _projectFilter;
@@ -696,6 +824,7 @@ class AgentDashboardModel with ChangeNotifier {
       notifyRead: false,
       persistRead: false,
     );
+    await _refreshBridgeDiagnosticsInternal(notify: false);
     final attachedLatestSession = await _loadRuntimeCatalogs();
     final reconciledProjects =
         !attachedLatestSession && _reconcileConversationProjectsFromSessions();
@@ -706,6 +835,7 @@ class AgentDashboardModel with ChangeNotifier {
       await _save();
     }
     _loaded = true;
+    _startBridgeDiagnosticsPolling();
     notifyListeners();
     final trailingSelectedIndex = _selectedConversationIndex();
     unawaited(_ensureConversationHydratedAtIndex(trailingSelectedIndex));
@@ -1859,7 +1989,6 @@ class AgentDashboardModel with ChangeNotifier {
       source: AgentDashboardMessageSource.structuredAgentEvent,
       role: AgentDashboardMessageRole.assistant,
     );
-    final token = evt['token']?.toString() ?? '';
     final project = evt['project']?.toString() ?? defaultProjectId;
     if (_shouldRecoverBridgeRunFailure(
       requestId: requestId,
@@ -2562,6 +2691,7 @@ class AgentDashboardModel with ChangeNotifier {
       final sessions = await runtime.loadSessions(
         conversationId: _selectedConversationId,
       );
+      _lastSessionCatalogError = null;
       if (runtime.defersSkillCatalogLoad) {
         _sessionSummaries = [];
         _sessionsLoaded = false;
@@ -2570,7 +2700,8 @@ class AgentDashboardModel with ChangeNotifier {
         _sessionsLoaded = true;
         attachedLatestSession = _maybeAttachLatestSession();
       }
-    } catch (_) {
+    } catch (e) {
+      _lastSessionCatalogError = e.toString();
       _sessionSummaries = [];
       _sessionsLoaded = false;
     }
@@ -2585,7 +2716,17 @@ class AgentDashboardModel with ChangeNotifier {
 
   Future<void> reloadSessionCatalog() async {
     await ensureLoaded();
+    await _refreshBridgeDiagnosticsInternal(notify: false);
     await _requestSessionCatalogReload(notify: true);
+  }
+
+  Future<void> refreshBridgeDiagnostics() async {
+    await ensureLoaded();
+    await _refreshBridgeDiagnosticsInternal(notify: true, attemptStart: true);
+    if (_bridgeDiagnostics?.state == AgentBridgeHealthState.healthy &&
+        !_sessionsLoaded) {
+      await _requestSessionCatalogReload(notify: true);
+    }
   }
 
   Future<void> _requestSessionCatalogReload({required bool notify}) async {
@@ -2593,6 +2734,7 @@ class AgentDashboardModel with ChangeNotifier {
       final sessions = await runtime.loadSessions(
         conversationId: _selectedConversationId,
       );
+      _lastSessionCatalogError = null;
       if (runtime.defersSkillCatalogLoad) {
         _sessionSummaries = [];
         _sessionsLoaded = false;
@@ -2606,6 +2748,7 @@ class AgentDashboardModel with ChangeNotifier {
       }
     } catch (e) {
       debugPrint('[AgentDashboardModel] Failed to reload session catalog: $e');
+      _lastSessionCatalogError = e.toString();
       _sessionSummaries = [];
       _sessionsLoaded = false;
     } finally {
@@ -2636,6 +2779,7 @@ class AgentDashboardModel with ChangeNotifier {
       debugPrint(
         '[AgentDashboardModel] retry session catalog attempt=$_sessionCatalogRetryCount',
       );
+      unawaited(_refreshBridgeDiagnosticsInternal(notify: false));
       unawaited(_requestSessionCatalogReload(notify: true));
     });
   }
@@ -2671,6 +2815,58 @@ class AgentDashboardModel with ChangeNotifier {
         notifyListeners();
       }
     }
+  }
+
+  Future<void> _refreshBridgeDiagnosticsInternal({
+    required bool notify,
+    bool attemptStart = false,
+  }) async {
+    if (!runtime.supportsBridgeDiagnostics) {
+      _bridgeDiagnostics = null;
+      _bridgeDiagnosticsLoading = false;
+      return;
+    }
+    if (_bridgeDiagnosticsLoading) {
+      return;
+    }
+    _bridgeDiagnosticsLoading = true;
+    if (notify) {
+      notifyListeners();
+    }
+    try {
+      _bridgeDiagnostics = await runtime.loadBridgeDiagnostics(
+        attemptStart: attemptStart,
+      );
+    } catch (e) {
+      _bridgeDiagnostics = AgentBridgeDiagnostics(
+        state: AgentBridgeHealthState.unreachable,
+        port: 17321,
+        checkedAt: DateTime.now(),
+        summary: 'Bridge probe failed',
+        detail: e.toString(),
+        errors: <String>[e.toString()],
+      );
+    } finally {
+      _bridgeDiagnosticsLoading = false;
+      if (notify) {
+        notifyListeners();
+      }
+    }
+  }
+
+  void _startBridgeDiagnosticsPolling() {
+    if (!runtime.supportsBridgeDiagnostics || _bridgeDiagnosticsTimer != null) {
+      return;
+    }
+    _bridgeDiagnosticsTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => unawaited(_refreshBridgeDiagnosticsInternal(notify: true)),
+    );
+  }
+
+  void _stopBridgeDiagnosticsPolling() {
+    _bridgeDiagnosticsTimer?.cancel();
+    _bridgeDiagnosticsTimer = null;
   }
 
   bool _maybeAttachLatestSession() {
@@ -3332,6 +3528,7 @@ class AgentDashboardModel with ChangeNotifier {
   @override
   void dispose() {
     _draftSaveTimer?.cancel();
+    _stopBridgeDiagnosticsPolling();
     _taskStatusBubbleTimer?.cancel();
     _stopDeferredSessionCatalogRetry();
     textController.dispose();

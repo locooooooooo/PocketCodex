@@ -17,8 +17,16 @@ AgentDashboardRuntime createRustDeskAgentDashboardRuntime(Object parent) {
 class RustDeskAgentDashboardWebRuntime implements AgentDashboardRuntime {
   final Map<String, Timer> _statusPollers = <String, Timer>{};
 
+  int get _bridgePort {
+    final uri = Uri.tryParse(_bridgeBaseUrl);
+    return uri?.hasPort == true ? uri!.port : 17321;
+  }
+
   @override
   bool get defersSkillCatalogLoad => false;
+
+  @override
+  bool get supportsBridgeDiagnostics => true;
 
   @override
   String get peerId {
@@ -56,6 +64,19 @@ class RustDeskAgentDashboardWebRuntime implements AgentDashboardRuntime {
       );
     }
     return Map<String, dynamic>.from(jsonDecode(response.body) as Map);
+  }
+
+  @override
+  Future<AgentBridgeDiagnostics?> loadBridgeDiagnostics({
+    bool attemptStart = false,
+  }) async {
+    final _ = attemptStart;
+    try {
+      final config = await _getJson('/agent/config');
+      return _parseBridgeDiagnostics(config);
+    } catch (e) {
+      return buildBridgeUnreachableDiagnostics(error: e, port: _bridgePort);
+    }
   }
 
   @override
@@ -263,5 +284,57 @@ class RustDeskAgentDashboardWebRuntime implements AgentDashboardRuntime {
       'nextCursor': nextCursor,
       'next_cursor': nextCursor,
     };
+  }
+
+  AgentBridgeDiagnostics _parseBridgeDiagnostics(Map<String, dynamic> config) {
+    final enabled = config['enabled'] == true;
+    final port = int.tryParse(config['port']?.toString() ?? '') ?? _bridgePort;
+    final command = config['command']?.toString().trim() ?? '';
+    final requireConfirmation = config['require_confirmation'] == true;
+    final errors = (config['errors'] as List<dynamic>? ?? const <dynamic>[])
+        .map((e) => e.toString().trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    final projectCount = (config['projects'] as List<dynamic>? ?? const [])
+        .whereType<Map>()
+        .length;
+
+    final AgentBridgeHealthState state;
+    final String summary;
+    final String detail;
+
+    if (!enabled) {
+      state = AgentBridgeHealthState.disabled;
+      summary = 'Bridge is disabled';
+      detail = 'Enable the codex bridge before loading sessions.';
+    } else if (errors.isNotEmpty) {
+      state = AgentBridgeHealthState.misconfigured;
+      summary = 'Bridge config has errors';
+      detail = errors.first;
+    } else if (projectCount == 0 || command.isEmpty) {
+      state = AgentBridgeHealthState.misconfigured;
+      summary = 'Bridge config is incomplete';
+      detail = projectCount == 0
+          ? 'No bridge projects are configured.'
+          : 'No bridge command is configured.';
+    } else {
+      state = AgentBridgeHealthState.healthy;
+      summary = 'Bridge service is listening on $port';
+      detail =
+          'Command: $command | Projects: $projectCount | Confirmation: ${requireConfirmation ? "on" : "off"}';
+    }
+
+    return AgentBridgeDiagnostics(
+      state: state,
+      port: port,
+      checkedAt: DateTime.now(),
+      summary: summary,
+      detail: detail,
+      enabled: enabled,
+      command: command,
+      projectCount: projectCount,
+      requireConfirmation: requireConfirmation,
+      errors: errors,
+    );
   }
 }

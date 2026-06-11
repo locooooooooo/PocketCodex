@@ -1072,6 +1072,21 @@ pub fn main_get_options_sync() -> SyncReturn<String> {
     SyncReturn(get_options())
 }
 
+pub fn main_get_codex_bridge_status_sync(attempt_start: bool) -> SyncReturn<String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        return SyncReturn(
+            serde_json::to_string(&crate::agent_bridge::config_status_with_probe(attempt_start))
+                .unwrap_or_default(),
+        );
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = attempt_start;
+        SyncReturn(String::new())
+    }
+}
+
 pub fn main_set_options(json: String) {
     let mut map: HashMap<String, String> = serde_json::from_str(&json).unwrap_or(HashMap::new());
     #[cfg(target_os = "android")]
