@@ -140,6 +140,10 @@ Pocket-Codex 把公开品牌和兼容性敏感的内部标识分开处理。
 
 部分底层标识会继续保持与 RustDesk 基座兼容，包括包名、可执行文件名、部分内部类名、驱动名、依赖 URL 和旧的 `rustdesk://` deep link scheme。支持的平台也会同时暴露新的 `pocket-codex://` scheme。
 
+### 华为 / HarmonyOS APK 安装注意事项
+
+在华为或 HarmonyOS 手机上测试本地构建的 Android APK 时，如果安装器或安全检测拦截安装，先让手机断网再安装。关闭 Wi-Fi 和移动数据，完成 APK 安装后再恢复联网。Android 版本冲突需要单独处理：如果 `adb install` 报版本降级，先提升 `versionCode` 或卸载旧包。
+
 ## 当前状态
 
 Pocket-Codex 是正在推进中的原型，适合开发和受控测试，还不是打磨完成的公开发布版。

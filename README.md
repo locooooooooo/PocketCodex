@@ -140,6 +140,10 @@ Current public branding uses:
 
 Some lower-level identifiers intentionally remain compatible with the RustDesk base, including package identifiers, executable names, selected internal class names, driver names, dependency URLs, and the legacy `rustdesk://` deep link scheme. New builds also expose `pocket-codex://` where platform support is available.
 
+### Huawei / HarmonyOS APK Install Note
+
+When testing locally built Android APKs on Huawei or HarmonyOS phones, install with the phone offline if Huawei's installer/security check blocks the package. Disable Wi-Fi and mobile data, install the APK, then re-enable networking after installation. Treat Android version conflicts separately: if `adb install` reports a version downgrade, bump `versionCode` or uninstall the older build first.
+
 ## Current Status
 
 Pocket-Codex is an active prototype. It is suitable for development and controlled testing, not yet a polished public release.

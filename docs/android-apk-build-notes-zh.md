@@ -198,6 +198,20 @@ Unresolved reference 'setDefaults'
 - 使用已存在的 `R.mipmap.ic_launcher`。
 - 对 `NotificationCompat.Builder` 使用 `NotificationCompat.DEFAULT_ALL`。
 
+### 7. 华为 / HarmonyOS 安装检测拦截本地 APK
+
+现象：
+
+```text
+华为安装器或安全检测拦截本地构建的 APK，联网状态下无法继续安装
+```
+
+处理：
+
+- 先关闭手机 Wi-Fi 和移动数据，让手机处于断网状态。
+- 断网后安装 APK，安装完成后再恢复联网。
+- 如果是 `adb install` 报版本降级或签名冲突，按 Android 安装错误单独处理：提升 `versionCode`、卸载旧包，或确认签名来源，不要把这类错误误判成华为检测拦截。
+
 ## 验证
 
 检查 APK：
